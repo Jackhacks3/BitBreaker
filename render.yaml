@@ -1,0 +1,59 @@
+# Render.com Blueprint
+# Deploy with: Connect repo to Render and it auto-deploys
+
+services:
+  # Backend API
+  - type: web
+    name: brick-breaker-api
+    env: node
+    region: oregon
+    plan: starter
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: FRONTEND_URL
+        fromService:
+          name: brick-breaker-frontend
+          type: web
+          property: host
+      - key: DATABASE_URL
+        fromDatabase:
+          name: brick-breaker-db
+          property: connectionString
+      - key: LNBITS_URL
+        sync: false
+      - key: LNBITS_API_KEY
+        sync: false
+      - key: LNBITS_ADMIN_KEY
+        sync: false
+      - key: BUY_IN_SATS
+        value: "10000"
+
+  # Frontend Static Site
+  - type: web
+    name: brick-breaker-frontend
+    env: static
+    region: oregon
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=3600
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://brick-breaker-api.onrender.com/api/*
+
+# PostgreSQL Database
+databases:
+  - name: brick-breaker-db
+    region: oregon
+    plan: starter
+    databaseName: brickbreaker
+    user: brickbreaker
