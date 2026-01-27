@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-brickbreaker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brickbreaker}
+      POSTGRES_DB: ${POSTGRES_DB:-brickbreaker}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-brickbreaker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - brickbreaker-network
+
+  # Redis (optional caching)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - brickbreaker-network
+
+  # Backend API
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-brickbreaker}:${POSTGRES_PASSWORD:-brickbreaker}@postgres:5432/${POSTGRES_DB:-brickbreaker}
+      - REDIS_URL=redis://redis:6379
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost}
+      - LNBITS_URL=${LNBITS_URL}
+      - LNBITS_API_KEY=${LNBITS_API_KEY}
+      - LNBITS_ADMIN_KEY=${LNBITS_ADMIN_KEY}
+      - LNBITS_WEBHOOK_SECRET=${LNBITS_WEBHOOK_SECRET}
+      - BUY_IN_SATS=${BUY_IN_SATS:-10000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - brickbreaker-network
+
+  # Frontend (Nginx serving static build)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        - VITE_API_URL=/api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-80}:80"
+    depends_on:
+      - api
+    networks:
+      - brickbreaker-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  brickbreaker-network:
+    driver: bridge

@@ -85,10 +85,10 @@ router.post('/deposit', requireAuth, async (req, res, next) => {
       typeof amountSats !== 'number' ||
       !Number.isFinite(amountSats) ||
       !Number.isInteger(amountSats) ||
-      amountSats < 1000
+      amountSats < 10
     ) {
       return res.status(400).json({
-        error: 'Invalid amount. Minimum deposit is 1000 sats (integer required)'
+        error: 'Invalid amount. Minimum deposit is 10 sats (integer required)'
       })
     }
 

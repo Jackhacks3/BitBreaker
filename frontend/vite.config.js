@@ -5,8 +5,16 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3000,
+    host: '0.0.0.0',
+    watch: {
+      usePolling: true
+    },
     proxy: {
-      '/api': 'http://localhost:4000'
+      '/api': {
+        target: process.env.VITE_API_URL || 'http://localhost:4000',
+        changeOrigin: true,
+        secure: false
+      }
     }
   }
 })

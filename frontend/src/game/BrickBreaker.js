@@ -1,23 +1,39 @@
 /**
- * Brick Breaker - Endless Mode (Engine Perfected)
+ * Brick Breaker - Endless Mode (2026 Edition)
  *
- * Physics matched to original Java game:
- * - Ball uses 20x20 rectangular hitbox (rendered as oval)
- * - Paddle uses three-zone collision (left/center/right)
- * - Velocities scaled for 60 FPS (original was 125 FPS)
- * - Wall bounds match original (700x600 canvas)
+ * Premium game engine with:
+ * - Frame-rate independent physics using delta time
+ * - Smooth paddle movement with acceleration
+ * - Precise angle-based ball bouncing
+ * - Progressive difficulty scaling
+ * - Anti-cheat input logging
  */
 
 export class BrickBreaker {
-    // Constants matching original Java game
+    // Canvas dimensions
     static CANVAS_WIDTH = 700;
     static CANVAS_HEIGHT = 600;
+
+    // Paddle constants (speed reduced 20% from 40 to 32)
     static PADDLE_WIDTH = 100;
-    static PADDLE_HEIGHT = 8;
-    static PADDLE_Y = 550;
-    static BALL_SIZE = 20;
-    static BRICK_OFFSET_X = 35;
-    static BRICK_OFFSET_Y = 50;
+    static PADDLE_HEIGHT = 10;
+    static PADDLE_Y = 560;
+    static PADDLE_BASE_SPEED = 8;      // pixels per frame at 60fps (was 40, now smooth)
+    static PADDLE_MIN_WIDTH = 60;
+
+    // Ball constants
+    static BALL_RADIUS = 10;
+    static BALL_BASE_SPEED = 6;        // pixels per frame at 60fps
+    static BALL_MAX_SPEED = 12;
+
+    // Brick constants
+    static BRICK_ROWS = 5;
+    static BRICK_COLS = 10;
+    static BRICK_WIDTH = 62;
+    static BRICK_HEIGHT = 22;
+    static BRICK_PADDING = 4;
+    static BRICK_OFFSET_TOP = 50;
+    static BRICK_OFFSET_LEFT = 35;
 
     constructor(canvas, onScoreUpdate, onGameOver) {
         this.canvas = canvas;
@@ -25,128 +41,138 @@ export class BrickBreaker {
         this.onScoreUpdate = onScoreUpdate;
         this.onGameOver = onGameOver;
 
-        // Canvas dimensions (matching original)
+        // Set canvas size
         this.width = BrickBreaker.CANVAS_WIDTH;
         this.height = BrickBreaker.CANVAS_HEIGHT;
         canvas.width = this.width;
         canvas.height = this.height;
 
+        // Timing for frame-rate independence
+        this.lastTime = 0;
+        this.targetFPS = 60;
+        this.targetFrameTime = 1000 / this.targetFPS;
+
         // Game state
         this.score = 0;
+        this.level = 1;
         this.isPlaying = false;
         this.isPaused = false;
         this.gameOver = false;
 
-        // Difficulty scaling
-        this.level = 1;
-        this.baseSpeed = 1; // Base multiplier for velocity scaling
-        this.currentSpeed = 1;
+        // Difficulty progression
+        this.difficultyMultiplier = 1.0;
         this.rowDropTimer = 0;
-        this.rowDropInterval = 1500; // Drop new row every ~25 seconds at 60fps
+        this.rowDropInterval = 1800; // frames until new row drops (~30 sec at 60fps)
 
-        // Input recording for anti-cheat
+        // Anti-cheat
         this.inputLog = [];
         this.frameCount = 0;
         this.gameStartTime = null;
 
-        // Collision flag to prevent multiple paddle hits per frame
-        this.paddleHitThisFrame = false;
+        // Input handling
+        this.keys = { left: false, right: false };
+        this.inputsBound = false;
 
-        // Bind handlers for proper cleanup
+        // Bind methods
         this.handleKeyDown = this.handleKeyDown.bind(this);
         this.handleKeyUp = this.handleKeyUp.bind(this);
         this.handleTouch = this.handleTouch.bind(this);
-
-        // Input state
-        this.keys = { left: false, right: false };
-        this.inputsBound = false;
+        this.gameLoop = this.gameLoop.bind(this);
     }
 
+    /**
+     * Initialize all game entities
+     */
     initEntities() {
-        // Paddle (matching original: 100x8 at y=550)
+        // Paddle - centered at bottom
         this.paddle = {
             x: this.width / 2 - BrickBreaker.PADDLE_WIDTH / 2,
             y: BrickBreaker.PADDLE_Y,
             width: BrickBreaker.PADDLE_WIDTH,
             height: BrickBreaker.PADDLE_HEIGHT,
-            speed: 40, // 20 * 2 for 60 FPS (original was 20 at 125 FPS)
-            minWidth: 50
+            speed: BrickBreaker.PADDLE_BASE_SPEED,
+            velocity: 0,           // Current velocity for smooth movement
+            acceleration: 0.8,     // How fast paddle accelerates
+            friction: 0.85,        // Deceleration when no input
+            targetVelocity: 0
         };
 
-        // Ball as rectangle (matching original: 20x20 at (120, 350))
-        // Velocities scaled: original (-1, -2) at 125 FPS -> (-2, -4) at 60 FPS
+        // Ball - starts above paddle, moving up-left
+        const startAngle = -Math.PI / 4 + (Math.random() - 0.5) * 0.5; // Slight random variation
         this.ball = {
-            x: 120,
-            y: 350,
-            width: BrickBreaker.BALL_SIZE,
-            height: BrickBreaker.BALL_SIZE,
-            dx: -2,
-            dy: -4
+            x: this.width / 2,
+            y: BrickBreaker.PADDLE_Y - 30,
+            radius: BrickBreaker.BALL_RADIUS,
+            speed: BrickBreaker.BALL_BASE_SPEED,
+            dx: Math.cos(startAngle) * BrickBreaker.BALL_BASE_SPEED,
+            dy: -Math.abs(Math.sin(startAngle) * BrickBreaker.BALL_BASE_SPEED) // Always start going up
         };
 
-        // Brick configuration
-        this.brickRowCount = 5;
-        this.brickColCount = 10;
-        this.brickWidth = 62;
-        this.brickHeight = 20;
-        this.brickPadding = 4;
-        this.brickOffsetTop = BrickBreaker.BRICK_OFFSET_Y;
-        this.brickOffsetLeft = BrickBreaker.BRICK_OFFSET_X;
-
-        // Initialize brick grid
+        // Initialize bricks
         this.bricks = [];
         this.initBricks();
     }
 
+    /**
+     * Create the brick grid
+     */
     initBricks() {
         this.bricks = [];
-        for (let row = 0; row < this.brickRowCount; row++) {
+        const colors = ['#ff6b6b', '#feca57', '#48dbfb', '#1dd1a1', '#5f27cd'];
+
+        for (let row = 0; row < BrickBreaker.BRICK_ROWS; row++) {
             this.bricks[row] = [];
-            for (let col = 0; col < this.brickColCount; col++) {
+            for (let col = 0; col < BrickBreaker.BRICK_COLS; col++) {
                 this.bricks[row][col] = {
-                    x: col * (this.brickWidth + this.brickPadding) + this.brickOffsetLeft,
-                    y: row * (this.brickHeight + this.brickPadding) + this.brickOffsetTop,
-                    width: this.brickWidth,
-                    height: this.brickHeight,
+                    x: col * (BrickBreaker.BRICK_WIDTH + BrickBreaker.BRICK_PADDING) + BrickBreaker.BRICK_OFFSET_LEFT,
+                    y: row * (BrickBreaker.BRICK_HEIGHT + BrickBreaker.BRICK_PADDING) + BrickBreaker.BRICK_OFFSET_TOP,
+                    width: BrickBreaker.BRICK_WIDTH,
+                    height: BrickBreaker.BRICK_HEIGHT,
                     alive: true,
-                    points: 10 + (this.brickRowCount - row - 1) * 5,
-                    color: this.getBrickColor(row)
+                    points: (BrickBreaker.BRICK_ROWS - row) * 10, // Top rows worth more
+                    color: colors[row % colors.length],
+                    hitTime: 0 // For hit animation
                 };
             }
         }
     }
 
-    getBrickColor(row) {
-        const colors = ['#ff6b6b', '#feca57', '#48dbfb', '#1dd1a1', '#5f27cd'];
-        return colors[row % colors.length];
-    }
-
+    /**
+     * Bind keyboard and touch inputs
+     */
     bindInputs() {
         if (this.inputsBound) return;
 
         document.addEventListener('keydown', this.handleKeyDown);
         document.addEventListener('keyup', this.handleKeyUp);
+        this.canvas.addEventListener('touchstart', this.handleTouch, { passive: false });
         this.canvas.addEventListener('touchmove', this.handleTouch, { passive: false });
         this.inputsBound = true;
     }
 
     handleKeyDown(e) {
-        if (e.key === 'ArrowLeft' || e.key === 'a') {
-            this.keys.left = true;
-            this.logInput('left_down');
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+            if (!this.keys.left) {
+                this.keys.left = true;
+                this.logInput('left_down');
+            }
+            e.preventDefault();
         }
-        if (e.key === 'ArrowRight' || e.key === 'd') {
-            this.keys.right = true;
-            this.logInput('right_down');
+        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+            if (!this.keys.right) {
+                this.keys.right = true;
+                this.logInput('right_down');
+            }
+            e.preventDefault();
         }
     }
 
     handleKeyUp(e) {
-        if (e.key === 'ArrowLeft' || e.key === 'a') {
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
             this.keys.left = false;
             this.logInput('left_up');
         }
-        if (e.key === 'ArrowRight' || e.key === 'd') {
+        if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
             this.keys.right = false;
             this.logInput('right_up');
         }
@@ -157,417 +183,497 @@ export class BrickBreaker {
         const touch = e.touches[0];
         const rect = this.canvas.getBoundingClientRect();
         const scaleX = this.canvas.width / rect.width;
-        const x = (touch.clientX - rect.left) * scaleX;
+        const touchX = (touch.clientX - rect.left) * scaleX;
 
-        // Center paddle on touch, with bounds clamping
-        this.paddle.x = Math.max(0, Math.min(this.width - this.paddle.width, x - this.paddle.width / 2));
-        this.logInput(`touch_${Math.round(x)}`);
+        // Move paddle toward touch position smoothly
+        const paddleCenter = this.paddle.x + this.paddle.width / 2;
+        const diff = touchX - paddleCenter;
+
+        this.keys.left = diff < -10;
+        this.keys.right = diff > 10;
+
+        this.logInput(`touch_${Math.round(touchX)}`);
     }
 
     logInput(action) {
         if (this.isPlaying && !this.gameOver) {
             this.inputLog.push({
                 frame: this.frameCount,
-                time: Date.now() - this.gameStartTime,
-                action: action
+                t: Date.now() - this.gameStartTime,
+                action
             });
         }
     }
 
+    /**
+     * Start or restart the game
+     */
     start() {
-        // Reset game state
         this.isPlaying = true;
         this.gameOver = false;
+        this.isPaused = false;
         this.score = 0;
         this.level = 1;
-        this.currentSpeed = this.baseSpeed;
+        this.difficultyMultiplier = 1.0;
         this.frameCount = 0;
         this.rowDropTimer = 0;
         this.inputLog = [];
         this.gameStartTime = Date.now();
+        this.lastTime = performance.now();
 
-        // Reset input state
         this.keys = { left: false, right: false };
 
-        // Initialize game entities
         this.initEntities();
-
-        // Bind inputs (only once)
         this.bindInputs();
 
-        // Start game loop
-        this.gameLoop();
+        requestAnimationFrame(this.gameLoop);
     }
 
-    gameLoop() {
+    /**
+     * Main game loop with delta time
+     */
+    gameLoop(currentTime) {
         if (!this.isPlaying || this.gameOver) return;
 
+        // Calculate delta time for frame-rate independence
+        const deltaTime = currentTime - this.lastTime;
+        this.lastTime = currentTime;
+
+        // Normalize to target frame rate (1.0 = perfect 60fps)
+        const deltaMultiplier = Math.min(deltaTime / this.targetFrameTime, 2.0);
+
         this.frameCount++;
-        this.paddleHitThisFrame = false;
-        this.update();
+
+        if (!this.isPaused) {
+            this.update(deltaMultiplier);
+        }
+
         this.render();
 
-        requestAnimationFrame(() => this.gameLoop());
+        requestAnimationFrame(this.gameLoop);
     }
 
-    update() {
-        if (this.isPaused) return;
+    /**
+     * Update game state
+     */
+    update(dt) {
+        this.updatePaddle(dt);
+        this.updateBall(dt);
+        this.checkCollisions();
+        this.updateDifficulty();
 
-        // Move paddle (scaled for 60 FPS)
-        if (this.keys.left) {
-            this.paddle.x -= this.paddle.speed;
-        }
-        if (this.keys.right) {
-            this.paddle.x += this.paddle.speed;
-        }
-
-        // Clamp paddle position
-        this.paddle.x = Math.max(0, Math.min(this.width - this.paddle.width, this.paddle.x));
-
-        // Move ball
-        this.ball.x += this.ball.dx * this.currentSpeed;
-        this.ball.y += this.ball.dy * this.currentSpeed;
-
-        // Wall collisions (matching original bounds)
-        this.checkWallCollision();
-
-        // Game over check (matching original: y > 570)
-        if (this.ball.y > 570) {
-            this.endGame();
-            return;
-        }
-
-        // Paddle collision (three-zone logic)
-        if (!this.paddleHitThisFrame) {
-            this.checkPaddleCollision();
-        }
-
-        // Brick collisions
-        this.checkBrickCollisions();
-
-        // Endless mode: drop new rows periodically
-        this.rowDropTimer++;
+        // Endless mode: periodic row drops
+        this.rowDropTimer += dt;
         if (this.rowDropTimer >= this.rowDropInterval) {
             this.dropNewRow();
             this.rowDropTimer = 0;
         }
-
-        // Difficulty scaling
-        this.updateDifficulty();
     }
 
     /**
-     * Rectangle intersection check (matching original Java Rectangle.intersects)
+     * Smooth paddle movement with acceleration/friction
      */
-    intersects(r1, r2) {
-        return r1.x < r2.x + r2.width &&
-               r1.x + r1.width > r2.x &&
-               r1.y < r2.y + r2.height &&
-               r1.y + r1.height > r2.y;
+    updatePaddle(dt) {
+        const p = this.paddle;
+
+        // Determine target velocity based on input
+        if (this.keys.left && !this.keys.right) {
+            p.targetVelocity = -p.speed * this.difficultyMultiplier;
+        } else if (this.keys.right && !this.keys.left) {
+            p.targetVelocity = p.speed * this.difficultyMultiplier;
+        } else {
+            p.targetVelocity = 0;
+        }
+
+        // Smooth acceleration toward target
+        if (p.targetVelocity !== 0) {
+            p.velocity += (p.targetVelocity - p.velocity) * p.acceleration * dt;
+        } else {
+            // Apply friction when no input
+            p.velocity *= Math.pow(p.friction, dt);
+            if (Math.abs(p.velocity) < 0.1) p.velocity = 0;
+        }
+
+        // Apply velocity
+        p.x += p.velocity * dt;
+
+        // Clamp to bounds
+        p.x = Math.max(5, Math.min(this.width - p.width - 5, p.x));
     }
 
     /**
-     * Wall collision (matching original bounds: x<0, x>670, y<0)
+     * Update ball position
+     */
+    updateBall(dt) {
+        const b = this.ball;
+
+        // Apply velocity with difficulty scaling
+        b.x += b.dx * dt * this.difficultyMultiplier;
+        b.y += b.dy * dt * this.difficultyMultiplier;
+    }
+
+    /**
+     * Check all collisions
+     */
+    checkCollisions() {
+        this.checkWallCollision();
+        this.checkPaddleCollision();
+        this.checkBrickCollisions();
+        this.checkGameOver();
+    }
+
+    /**
+     * Wall collision detection
      */
     checkWallCollision() {
+        const b = this.ball;
+        const r = b.radius;
+
         // Left wall
-        if (this.ball.x < 0) {
-            this.ball.dx = -this.ball.dx;
-            this.ball.x = 0;
+        if (b.x - r <= 5) {
+            b.x = 5 + r;
+            b.dx = Math.abs(b.dx);
         }
-        // Right wall (700 - 20 = 680, but original uses 670)
-        if (this.ball.x > 670) {
-            this.ball.dx = -this.ball.dx;
-            this.ball.x = 670;
+
+        // Right wall
+        if (b.x + r >= this.width - 5) {
+            b.x = this.width - 5 - r;
+            b.dx = -Math.abs(b.dx);
         }
+
         // Top wall
-        if (this.ball.y < 0) {
-            this.ball.dy = -this.ball.dy;
-            this.ball.y = 0;
+        if (b.y - r <= 5) {
+            b.y = 5 + r;
+            b.dy = Math.abs(b.dy);
         }
     }
 
     /**
-     * Paddle collision with three zones (matching original Java logic)
-     * Left zone (30px): bounce left
-     * Center zone (40px): straight bounce
-     * Right zone (30px): bounce right
+     * Paddle collision with angle-based bounce
      */
     checkPaddleCollision() {
-        const ballRect = {
-            x: this.ball.x,
-            y: this.ball.y,
-            width: this.ball.width,
-            height: this.ball.height
-        };
+        const b = this.ball;
+        const p = this.paddle;
 
-        const paddleY = this.paddle.y;
-        const paddleX = this.paddle.x;
+        // Only check if ball is moving down and near paddle height
+        if (b.dy <= 0) return;
+        if (b.y + b.radius < p.y || b.y - b.radius > p.y + p.height) return;
 
-        // Scale zones based on paddle width (original: 30-40-30 for 100px paddle)
-        const zoneRatio = this.paddle.width / 100;
-        const leftZone = 30 * zoneRatio;
-        const centerZone = 40 * zoneRatio;
-        const rightZone = 30 * zoneRatio;
+        // Check horizontal overlap
+        if (b.x + b.radius >= p.x && b.x - b.radius <= p.x + p.width) {
+            // Calculate hit position (-1 to 1, left to right)
+            const hitPos = (b.x - (p.x + p.width / 2)) / (p.width / 2);
 
-        // Left zone - bounce left
-        const leftRect = { x: paddleX, y: paddleY, width: leftZone, height: this.paddle.height };
-        if (this.intersects(ballRect, leftRect)) {
-            this.ball.dy = -Math.abs(this.ball.dy); // Always go up
-            this.ball.dx = -4; // Go left (scaled for 60 FPS, original: -2)
-            this.ball.y = paddleY - this.ball.height; // Move above paddle
-            this.paddleHitThisFrame = true;
-            return;
-        }
+            // Calculate bounce angle (-60 to 60 degrees from vertical)
+            const maxAngle = Math.PI / 3; // 60 degrees
+            const angle = hitPos * maxAngle;
 
-        // Right zone - bounce right
-        const rightRect = { x: paddleX + leftZone + centerZone, y: paddleY, width: rightZone, height: this.paddle.height };
-        if (this.intersects(ballRect, rightRect)) {
-            this.ball.dy = -Math.abs(this.ball.dy); // Always go up
-            this.ball.dx = 4; // Go right (scaled for 60 FPS)
-            this.ball.y = paddleY - this.ball.height;
-            this.paddleHitThisFrame = true;
-            return;
-        }
+            // Maintain ball speed, change direction
+            const speed = Math.sqrt(b.dx * b.dx + b.dy * b.dy);
+            b.dx = Math.sin(angle) * speed;
+            b.dy = -Math.abs(Math.cos(angle) * speed); // Always bounce up
 
-        // Center zone - straight bounce
-        const centerRect = { x: paddleX + leftZone, y: paddleY, width: centerZone, height: this.paddle.height };
-        if (this.intersects(ballRect, centerRect)) {
-            this.ball.dy = -Math.abs(this.ball.dy); // Always go up
-            // Keep dx mostly the same, slight variation
-            this.ball.y = paddleY - this.ball.height;
-            this.paddleHitThisFrame = true;
-            return;
+            // Position ball above paddle to prevent sticking
+            b.y = p.y - b.radius - 1;
+
+            // Add slight speed boost on paddle hit (excitement factor)
+            const newSpeed = Math.min(speed * 1.01, BrickBreaker.BALL_MAX_SPEED);
+            const speedRatio = newSpeed / speed;
+            b.dx *= speedRatio;
+            b.dy *= speedRatio;
         }
     }
 
     /**
-     * Brick collision detection (matching original Rectangle.intersects)
+     * Brick collision detection
      */
     checkBrickCollisions() {
-        const ballRect = {
-            x: this.ball.x,
-            y: this.ball.y,
-            width: this.ball.width,
-            height: this.ball.height
-        };
+        const b = this.ball;
 
-        brickLoop:
         for (let row = 0; row < this.bricks.length; row++) {
             for (let col = 0; col < this.bricks[row].length; col++) {
                 const brick = this.bricks[row][col];
                 if (!brick.alive) continue;
 
-                const brickRect = {
-                    x: brick.x,
-                    y: brick.y,
-                    width: brick.width,
-                    height: brick.height
-                };
+                // Circle-rectangle collision
+                const closestX = Math.max(brick.x, Math.min(b.x, brick.x + brick.width));
+                const closestY = Math.max(brick.y, Math.min(b.y, brick.y + brick.height));
 
-                if (this.intersects(ballRect, brickRect)) {
+                const distX = b.x - closestX;
+                const distY = b.y - closestY;
+                const distance = Math.sqrt(distX * distX + distY * distY);
+
+                if (distance < b.radius) {
+                    // Collision detected
                     brick.alive = false;
-                    this.score += brick.points;
+                    brick.hitTime = this.frameCount;
+
+                    this.score += brick.points * this.level;
                     this.onScoreUpdate(this.score);
 
-                    // Determine collision side (matching original logic)
-                    // Check if ball hit from side or top/bottom
-                    if (this.ball.x + 19 <= brick.x || this.ball.x + 1 >= brick.x + brick.width) {
-                        // Side hit
-                        this.ball.dx = -this.ball.dx;
+                    // Determine bounce direction based on collision side
+                    const overlapX = b.radius - Math.abs(distX);
+                    const overlapY = b.radius - Math.abs(distY);
+
+                    if (overlapX < overlapY) {
+                        // Side collision
+                        b.dx = -b.dx;
+                        b.x += (distX > 0 ? overlapX : -overlapX);
                     } else {
-                        // Top/bottom hit
-                        this.ball.dy = -this.ball.dy;
+                        // Top/bottom collision
+                        b.dy = -b.dy;
+                        b.y += (distY > 0 ? overlapY : -overlapY);
                     }
 
-                    // Check if row is cleared for endless mode
-                    this.checkRowCleared(row);
+                    // Check if row is cleared
+                    if (this.bricks[row].every(br => !br.alive)) {
+                        this.level++;
+                        this.shiftBricksDown();
+                        this.addNewRowAtTop();
+                    }
 
-                    // Only one brick collision per frame (matching original labeled break)
-                    break brickLoop;
+                    return; // One collision per frame
                 }
             }
         }
     }
 
-    checkRowCleared(row) {
-        if (row >= this.bricks.length) return;
-
-        const rowCleared = this.bricks[row].every(brick => !brick.alive);
-        if (rowCleared) {
-            this.shiftBricksDown();
-            this.addNewRowAtTop();
-            this.level++;
+    /**
+     * Check if ball fell below paddle
+     */
+    checkGameOver() {
+        if (this.ball.y - this.ball.radius > this.height) {
+            this.endGame();
         }
     }
 
+    /**
+     * Shift all bricks down
+     */
     shiftBricksDown() {
+        const shiftAmount = BrickBreaker.BRICK_HEIGHT + BrickBreaker.BRICK_PADDING;
         for (let row = 0; row < this.bricks.length; row++) {
             for (let col = 0; col < this.bricks[row].length; col++) {
-                this.bricks[row][col].y += this.brickHeight + this.brickPadding;
+                this.bricks[row][col].y += shiftAmount;
             }
         }
     }
 
+    /**
+     * Add new row of bricks at top
+     */
     addNewRowAtTop() {
+        const colors = ['#ff6b6b', '#feca57', '#48dbfb', '#1dd1a1', '#5f27cd'];
         const newRow = [];
-        for (let col = 0; col < this.brickColCount; col++) {
+
+        for (let col = 0; col < BrickBreaker.BRICK_COLS; col++) {
             newRow.push({
-                x: col * (this.brickWidth + this.brickPadding) + this.brickOffsetLeft,
-                y: this.brickOffsetTop,
-                width: this.brickWidth,
-                height: this.brickHeight,
+                x: col * (BrickBreaker.BRICK_WIDTH + BrickBreaker.BRICK_PADDING) + BrickBreaker.BRICK_OFFSET_LEFT,
+                y: BrickBreaker.BRICK_OFFSET_TOP,
+                width: BrickBreaker.BRICK_WIDTH,
+                height: BrickBreaker.BRICK_HEIGHT,
                 alive: true,
-                points: 10 + this.level * 5,
-                color: this.getBrickColor(this.level % 5)
+                points: 50 + this.level * 10,
+                color: colors[this.level % colors.length],
+                hitTime: 0
             });
         }
+
         this.bricks.unshift(newRow);
 
-        // Remove rows that are too low
-        while (this.bricks.length > 0 && this.bricks[this.bricks.length - 1][0].y > this.paddle.y - 30) {
-            this.bricks.pop();
-        }
+        // Remove rows that are too low (below paddle)
+        this.bricks = this.bricks.filter(row => row[0].y < this.paddle.y - 30);
     }
 
+    /**
+     * Drop a new row from the top (endless mode pressure)
+     */
     dropNewRow() {
-        // Push all existing bricks down
-        for (let row = 0; row < this.bricks.length; row++) {
-            for (let col = 0; col < this.bricks[row].length; col++) {
-                this.bricks[row][col].y += this.brickHeight + this.brickPadding;
+        this.shiftBricksDown();
+        this.addNewRowAtTop();
 
-                // Game over if bricks reach paddle level
-                if (this.bricks[row][col].alive && this.bricks[row][col].y > this.paddle.y - 50) {
+        // Check if bricks reached paddle level
+        for (let row of this.bricks) {
+            for (let brick of row) {
+                if (brick.alive && brick.y + brick.height > this.paddle.y - 20) {
                     this.endGame();
                     return;
                 }
             }
         }
-
-        // Add new row at top
-        const newRow = [];
-        for (let col = 0; col < this.brickColCount; col++) {
-            newRow.push({
-                x: col * (this.brickWidth + this.brickPadding) + this.brickOffsetLeft,
-                y: this.brickOffsetTop,
-                width: this.brickWidth,
-                height: this.brickHeight,
-                alive: true,
-                points: 10 + this.level * 5,
-                color: this.getBrickColor(this.level % 5)
-            });
-        }
-        this.bricks.unshift(newRow);
-
-        // Limit brick rows
-        if (this.bricks.length > 12) {
-            this.bricks.pop();
-        }
     }
 
+    /**
+     * Progressive difficulty scaling
+     */
     updateDifficulty() {
-        // Speed up every 1000 points (subtle, gradual increase)
-        const speedBonus = Math.floor(this.score / 1000) * 0.1;
-        this.currentSpeed = Math.min(this.baseSpeed + speedBonus, this.baseSpeed * 2);
+        // Gradual speed increase based on score (very subtle)
+        // Every 500 points = 2% speed increase, max 50% increase
+        const scoreBonus = Math.min(this.score / 500 * 0.02, 0.5);
 
-        // Shrink paddle every 1000 points (min 50px)
-        const newPaddleWidth = BrickBreaker.PADDLE_WIDTH - Math.floor(this.score / 1000) * 10;
-        this.paddle.width = Math.max(newPaddleWidth, this.paddle.minWidth);
+        // Level bonus (each level = 3% speed increase)
+        const levelBonus = (this.level - 1) * 0.03;
 
-        // Faster brick drops at higher scores
-        this.rowDropInterval = Math.max(600, 1500 - Math.floor(this.score / 300) * 100);
+        this.difficultyMultiplier = 1.0 + scoreBonus + levelBonus;
+
+        // Paddle shrinks gradually (min 60px)
+        const shrinkAmount = Math.floor(this.score / 1000) * 5;
+        this.paddle.width = Math.max(BrickBreaker.PADDLE_WIDTH - shrinkAmount, BrickBreaker.PADDLE_MIN_WIDTH);
+
+        // Row drop interval decreases with score (faster pressure)
+        this.rowDropInterval = Math.max(900, 1800 - Math.floor(this.score / 200) * 50);
     }
 
+    /**
+     * End the game
+     */
     endGame() {
         this.isPlaying = false;
         this.gameOver = true;
 
-        const gameData = {
+        this.onGameOver({
             score: this.score,
             level: this.level,
             duration: Date.now() - this.gameStartTime,
             inputLog: this.inputLog,
             frameCount: this.frameCount
-        };
-
-        this.onGameOver(gameData);
+        });
     }
 
+    /**
+     * Render the game
+     */
     render() {
-        // Clear canvas with background
-        this.ctx.fillStyle = '#1a1a2e';
-        this.ctx.fillRect(0, 0, this.width, this.height);
+        const ctx = this.ctx;
+
+        // Clear with gradient background
+        const gradient = ctx.createLinearGradient(0, 0, 0, this.height);
+        gradient.addColorStop(0, '#0f0f23');
+        gradient.addColorStop(1, '#1a1a2e');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, this.width, this.height);
+
+        // Draw walls
+        this.drawWalls();
 
         // Draw bricks
         this.drawBricks();
 
-        // Draw paddle (using fillRect for compatibility)
+        // Draw paddle
         this.drawPaddle();
 
-        // Draw ball (oval visual, rectangular hitbox)
+        // Draw ball
         this.drawBall();
-
-        // Draw walls
-        this.drawWalls();
 
         // Draw UI
         this.drawUI();
     }
 
-    drawBricks() {
-        for (let row = 0; row < this.bricks.length; row++) {
-            for (let col = 0; col < this.bricks[row].length; col++) {
-                const brick = this.bricks[row][col];
-                if (brick.alive) {
-                    this.ctx.fillStyle = brick.color;
-                    this.ctx.fillRect(brick.x, brick.y, brick.width, brick.height);
+    drawWalls() {
+        const ctx = this.ctx;
+        ctx.fillStyle = '#00d9ff';
+        ctx.shadowColor = '#00d9ff';
+        ctx.shadowBlur = 10;
 
-                    // Brick border
-                    this.ctx.strokeStyle = '#ffffff33';
-                    this.ctx.lineWidth = 2;
-                    this.ctx.strokeRect(brick.x, brick.y, brick.width, brick.height);
-                }
+        ctx.fillRect(0, 0, 5, this.height);           // Left
+        ctx.fillRect(this.width - 5, 0, 5, this.height); // Right
+        ctx.fillRect(0, 0, this.width, 5);            // Top
+
+        ctx.shadowBlur = 0;
+    }
+
+    drawBricks() {
+        const ctx = this.ctx;
+
+        for (let row of this.bricks) {
+            for (let brick of row) {
+                if (!brick.alive) continue;
+
+                // Brick fill with slight gradient
+                const grad = ctx.createLinearGradient(brick.x, brick.y, brick.x, brick.y + brick.height);
+                grad.addColorStop(0, brick.color);
+                grad.addColorStop(1, this.darkenColor(brick.color, 0.3));
+
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.roundRect(brick.x, brick.y, brick.width, brick.height, 3);
+                ctx.fill();
+
+                // Subtle border
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.lineWidth = 1;
+                ctx.stroke();
             }
         }
     }
 
     drawPaddle() {
-        this.ctx.fillStyle = '#00d9ff';
-        this.ctx.fillRect(this.paddle.x, this.paddle.y, this.paddle.width, this.paddle.height);
+        const ctx = this.ctx;
+        const p = this.paddle;
+
+        // Paddle glow
+        ctx.shadowColor = '#00d9ff';
+        ctx.shadowBlur = 15;
+
+        // Paddle gradient
+        const grad = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.height);
+        grad.addColorStop(0, '#00d9ff');
+        grad.addColorStop(1, '#0099cc');
+
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(p.x, p.y, p.width, p.height, 4);
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
     }
 
     drawBall() {
-        // Ball rendered as oval but collision is rectangular 20x20
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.beginPath();
-        this.ctx.ellipse(
-            this.ball.x + this.ball.width / 2,  // center x
-            this.ball.y + this.ball.height / 2, // center y
-            this.ball.width / 2,  // radius x
-            this.ball.height / 2, // radius y
-            0, 0, Math.PI * 2
+        const ctx = this.ctx;
+        const b = this.ball;
+
+        // Ball glow
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 20;
+
+        // Ball gradient for 3D effect
+        const grad = ctx.createRadialGradient(
+            b.x - b.radius * 0.3, b.y - b.radius * 0.3, 0,
+            b.x, b.y, b.radius
         );
-        this.ctx.fill();
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.5, '#e0e0e0');
+        grad.addColorStop(1, '#c0c0c0');
 
-        // Ball glow effect
-        this.ctx.shadowColor = '#00d9ff';
-        this.ctx.shadowBlur = 15;
-        this.ctx.fill();
-        this.ctx.shadowBlur = 0;
-    }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+        ctx.fill();
 
-    drawWalls() {
-        this.ctx.fillStyle = '#00d9ff';
-        this.ctx.fillRect(0, 0, 5, this.height);           // Left
-        this.ctx.fillRect(this.width - 5, 0, 5, this.height); // Right
-        this.ctx.fillRect(0, 0, this.width, 5);            // Top
+        ctx.shadowBlur = 0;
     }
 
     drawUI() {
-        this.ctx.fillStyle = '#ffffff';
-        this.ctx.font = '14px Arial';
-        this.ctx.fillText(`Level ${this.level}`, 10, 30);
-        this.ctx.fillText(`Speed ${this.currentSpeed.toFixed(1)}x`, this.width - 80, 30);
+        const ctx = this.ctx;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText(`Level ${this.level}`, 15, 28);
+
+        ctx.textAlign = 'right';
+        ctx.fillText(`${this.difficultyMultiplier.toFixed(2)}x`, this.width - 15, 28);
+    }
+
+    /**
+     * Utility: Darken a hex color
+     */
+    darkenColor(hex, amount) {
+        const num = parseInt(hex.slice(1), 16);
+        const r = Math.max(0, (num >> 16) - Math.round(255 * amount));
+        const g = Math.max(0, ((num >> 8) & 0x00FF) - Math.round(255 * amount));
+        const b = Math.max(0, (num & 0x0000FF) - Math.round(255 * amount));
+        return `#${(r << 16 | g << 8 | b).toString(16).padStart(6, '0')}`;
     }
 
     pause() {
@@ -576,21 +682,21 @@ export class BrickBreaker {
 
     resume() {
         this.isPaused = false;
+        this.lastTime = performance.now();
     }
 
     destroy() {
         this.isPlaying = false;
         this.gameOver = true;
 
-        // Remove event listeners to prevent memory leaks
         if (this.inputsBound) {
             document.removeEventListener('keydown', this.handleKeyDown);
             document.removeEventListener('keyup', this.handleKeyUp);
+            this.canvas.removeEventListener('touchstart', this.handleTouch);
             this.canvas.removeEventListener('touchmove', this.handleTouch);
             this.inputsBound = false;
         }
 
-        // Reset input state
         this.keys = { left: false, right: false };
     }
 }

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
@@ -9,7 +7,7 @@ services:
       POSTGRES_PASSWORD: brickbreaker
       POSTGRES_DB: brickbreaker
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,12 +26,15 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=4000
-      - DATABASE_URL=postgresql://brickbreaker:brickbreaker@postgres:5432/brickbreaker
       - FRONTEND_URL=http://localhost:3000
-      - BUY_IN_SATS=10000
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - BUY_IN_SATS=100
+      # Neon PostgreSQL
+      - DATABASE_URL=postgresql://neondb_owner:npg_87sauHxUcTnr@ep-floral-bonus-ahnsyf45-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require
+      # LNbits Configuration
+      - LNBITS_URL=https://demo.lnbits.com
+      - LNBITS_API_KEY=38ef31f4a6dd47ad8b713ba89645aa21
+      - LNBITS_ADMIN_KEY=d3422d9c267744eaae36ba2e9ae151ee
+      - LNBITS_WEBHOOK_SECRET=b07e9e7969f20134836f868632c21b4c704570307813f1917992468222e4ddc8
     volumes:
       - ./backend:/app
       - /app/node_modules
@@ -46,9 +47,11 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_API_URL=http://localhost:4000
+      - VITE_API_URL=http://api:4000
     depends_on:
       - api
+    stdin_open: true
+    tty: true
     volumes:
       - ./frontend:/app
       - /app/node_modules

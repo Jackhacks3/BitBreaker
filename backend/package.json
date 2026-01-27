@@ -1,22 +1,37 @@
 {
   "name": "brick-breaker-tournament-api",
-  "version": "1.0.0",
-  "description": "Backend API for Brick Breaker crypto tournament",
+  "version": "1.1.0",
+  "description": "Secure backend API for Brick Breaker crypto tournament",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "migrate": "node src/migrate.js"
+    "migrate": "node src/migrate.js",
+    "security-check": "npm audit && echo 'Security audit complete'"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "bcrypt": "^6.0.0",
+    "bech32": "^2.0.0",
+    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
-    "pg": "^8.11.3",
     "dotenv": "^16.3.1",
-    "uuid": "^9.0.1",
-    "node-cron": "^3.0.3",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
     "helmet": "^7.1.0",
-    "express-rate-limit": "^7.1.5"
-  }
+    "ioredis": "^5.3.2",
+    "node-cron": "^3.0.3",
+    "pg": "^8.11.3",
+    "secp256k1": "^5.0.0",
+    "uuid": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "bitcoin",
+    "lightning",
+    "tournament",
+    "gaming"
+  ]
 }

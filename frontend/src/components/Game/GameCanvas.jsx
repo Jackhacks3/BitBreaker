@@ -15,18 +15,28 @@ function GameCanvas({ onScoreUpdate, onGameOver }) {
   const gameRef = useRef(null)
   const [gameStarted, setGameStarted] = useState(false)
 
+  // Use refs for callbacks to prevent game restart on callback changes
+  const onScoreUpdateRef = useRef(onScoreUpdate)
+  const onGameOverRef = useRef(onGameOver)
+
+  // Keep refs updated
+  useEffect(() => {
+    onScoreUpdateRef.current = onScoreUpdate
+    onGameOverRef.current = onGameOver
+  }, [onScoreUpdate, onGameOver])
+
   useEffect(() => {
     if (!canvasRef.current) return
 
-    // Initialize game engine
+    // Initialize game engine with ref-wrapped callbacks
     const game = new BrickBreaker(
       canvasRef.current,
       (score) => {
-        onScoreUpdate(score)
+        onScoreUpdateRef.current(score)
       },
       (gameData) => {
         setGameStarted(false)
-        onGameOver(gameData)
+        onGameOverRef.current(gameData)
       }
     )
 
@@ -36,13 +46,13 @@ function GameCanvas({ onScoreUpdate, onGameOver }) {
     game.start()
     setGameStarted(true)
 
-    // Cleanup on unmount
+    // Cleanup on unmount only
     return () => {
       if (gameRef.current) {
         gameRef.current.destroy()
       }
     }
-  }, [onScoreUpdate, onGameOver])
+  }, []) // Empty deps - only run once on mount
 
   return (
     <div className="game-canvas-container">

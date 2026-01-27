@@ -1,58 +1,234 @@
 import { Router } from 'express'
-import crypto from 'crypto'
+import bcrypt from 'bcrypt'
 import db from '../services/database.js'
+import sessionStore from '../services/sessionStore.js'
+import { sanitizeDisplayName, sanitizeLightningAddress } from '../utils/sanitize.js'
 
 const router = Router()
 
 /**
  * Auth Routes
  *
- * Simple token-based auth for the tournament.
- * In production, this would use LNURL-auth for cryptographic verification.
+ * SECURITY FEATURES:
+ * - Username/password authentication with bcrypt
+ * - Redis-backed session storage (survives restarts)
+ * - Cryptographically secure tokens
+ * - Input sanitization (XSS prevention)
+ * - Session invalidation support
  */
 
-// In-memory token store (use Redis in production)
-const tokens = new Map()
+const BCRYPT_ROUNDS = 12
 
-/**
- * Generate a simple auth token
- */
-function generateToken() {
-  return crypto.randomBytes(32).toString('hex')
+// Username validation: 3-30 chars, alphanumeric + underscore
+function validateUsername(username) {
+  if (!username || typeof username !== 'string') {
+    return { valid: false, error: 'Username is required' }
+  }
+  const trimmed = username.trim().toLowerCase()
+  if (trimmed.length < 3) {
+    return { valid: false, error: 'Username must be at least 3 characters' }
+  }
+  if (trimmed.length > 30) {
+    return { valid: false, error: 'Username must be 30 characters or less' }
+  }
+  if (!/^[a-z0-9_]+$/.test(trimmed)) {
+    return { valid: false, error: 'Username can only contain letters, numbers, and underscores' }
+  }
+  return { valid: true, sanitized: trimmed }
+}
+
+// Password validation: minimum 8 characters
+function validatePassword(password) {
+  if (!password || typeof password !== 'string') {
+    return { valid: false, error: 'Password is required' }
+  }
+  if (password.length < 8) {
+    return { valid: false, error: 'Password must be at least 8 characters' }
+  }
+  if (password.length > 100) {
+    return { valid: false, error: 'Password is too long' }
+  }
+  return { valid: true }
 }
 
 /**
  * POST /api/auth/register
- * Register a new user or login existing user
+ * Register a new user with username/password
  */
 router.post('/register', async (req, res, next) => {
   try {
+    const { username, password, displayName } = req.body
+
+    // Validate username
+    const usernameResult = validateUsername(username)
+    if (!usernameResult.valid) {
+      return res.status(400).json({ error: usernameResult.error })
+    }
+
+    // Validate password
+    const passwordResult = validatePassword(password)
+    if (!passwordResult.valid) {
+      return res.status(400).json({ error: passwordResult.error })
+    }
+
+    // Sanitize display name (use username if not provided)
+    const nameResult = sanitizeDisplayName(displayName || username)
+    if (!nameResult.valid) {
+      return res.status(400).json({ error: nameResult.error })
+    }
+
+    const cleanUsername = usernameResult.sanitized
+    const cleanName = nameResult.sanitized
+
+    // Check if username already exists
+    const existingUser = await db.users.findByUsername(cleanUsername)
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username already taken' })
+    }
+
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS)
+
+    // Create user
+    const user = await db.users.createWithPassword(cleanName, cleanUsername, passwordHash)
+
+    if (!user) {
+      console.error('[AUTH] User creation returned null')
+      return res.status(500).json({ error: 'Registration failed - please try again' })
+    }
+
+    // Create wallet for new user
+    try {
+      await db.wallets.getOrCreate(user.id)
+    } catch (walletError) {
+      console.error('[AUTH] Wallet creation failed:', walletError.message)
+      // Continue - wallet can be created on first deposit
+    }
+
+    // Create secure session with explicit error handling
+    let token
+    try {
+      token = await sessionStore.createSession(user.id)
+    } catch (sessionError) {
+      console.error('[AUTH] Session creation failed after user registration:', sessionError.message)
+      // User exists but session failed - they can login to get a session
+      return res.status(201).json({
+        userId: user.id,
+        username: user.username,
+        displayName: user.display_name,
+        token: null,
+        message: 'Account created. Please login to continue.'
+      })
+    }
+
+    console.log(`[AUTH] User registered: ${user.id.substring(0, 8)}... (${cleanUsername})`)
+
+    res.json({
+      userId: user.id,
+      username: user.username,
+      displayName: user.display_name,
+      token
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/auth/login
+ * Login with username/password
+ */
+router.post('/login', async (req, res, next) => {
+  try {
+    const { username, password } = req.body
+
+    // Validate username format
+    const usernameResult = validateUsername(username)
+    if (!usernameResult.valid) {
+      return res.status(400).json({ error: 'Invalid username or password' })
+    }
+
+    // Validate password provided
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Invalid username or password' })
+    }
+
+    const cleanUsername = usernameResult.sanitized
+
+    // Find user by username
+    const user = await db.users.findByUsername(cleanUsername)
+    if (!user || !user.password_hash) {
+      // Use same error to prevent username enumeration
+      return res.status(401).json({ error: 'Invalid username or password' })
+    }
+
+    // Verify password
+    const passwordMatch = await bcrypt.compare(password, user.password_hash)
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Invalid username or password' })
+    }
+
+    // Update last login (non-critical, don't fail login if this fails)
+    try {
+      await db.users.updateLastLogin(user.id)
+    } catch (updateError) {
+      console.warn('[AUTH] Failed to update last login:', updateError.message)
+    }
+
+    // Create secure session with explicit error handling
+    let token
+    try {
+      token = await sessionStore.createSession(user.id)
+    } catch (sessionError) {
+      console.error('[AUTH] Session creation failed during login:', sessionError.message)
+      return res.status(500).json({ error: 'Login failed - please try again' })
+    }
+
+    console.log(`[AUTH] User logged in: ${user.id.substring(0, 8)}... (${cleanUsername})`)
+
+    res.json({
+      userId: user.id,
+      username: user.username,
+      displayName: user.display_name,
+      token
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/auth/register-legacy
+ * Legacy: Register with Lightning address (kept for compatibility)
+ */
+router.post('/register-legacy', async (req, res, next) => {
+  try {
     const { displayName, lightningAddress } = req.body
 
-    // Validate display name
-    if (!displayName || displayName.length < 2 || displayName.length > 20) {
-      return res.status(400).json({ error: 'Display name must be 2-20 characters' })
+    // Sanitize and validate display name
+    const nameResult = sanitizeDisplayName(displayName)
+    if (!nameResult.valid) {
+      return res.status(400).json({ error: nameResult.error })
     }
 
-    // Validate Lightning address format
-    const lnAddressRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/
-    if (!lnAddressRegex.test(lightningAddress)) {
-      return res.status(400).json({ error: 'Invalid Lightning address format' })
+    // Sanitize and validate Lightning address
+    const addressResult = sanitizeLightningAddress(lightningAddress)
+    if (!addressResult.valid) {
+      return res.status(400).json({ error: addressResult.error })
     }
 
-    // Sanitize display name (basic)
-    const cleanName = displayName.trim().substring(0, 20)
-    const cleanAddress = lightningAddress.trim().toLowerCase()
+    // Use sanitized values
+    const cleanName = nameResult.sanitized
+    const cleanAddress = addressResult.sanitized
 
     // Create or update user
     const user = await db.users.create(cleanName, cleanAddress)
 
-    // Generate token
-    const token = generateToken()
-    tokens.set(token, {
-      userId: user.id,
-      createdAt: Date.now()
-    })
+    // Create secure session
+    const token = await sessionStore.createSession(user.id)
+
+    // Log registration (for security audit)
+    console.log(`[AUTH] User registered/logged in (legacy): ${user.id.substring(0, 8)}...`)
 
     res.json({
       userId: user.id,
@@ -73,19 +249,29 @@ router.get('/me', async (req, res, next) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '')
 
-    if (!token || !tokens.has(token)) {
-      return res.status(401).json({ error: 'Unauthorized' })
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' })
     }
 
-    const { userId } = tokens.get(token)
-    const user = await db.users.findById(userId)
+    // Validate session
+    const session = await sessionStore.getSession(token)
+
+    if (!session) {
+      return res.status(401).json({ error: 'Invalid or expired token' })
+    }
+
+    // Get user data
+    const user = await db.users.findById(session.userId)
 
     if (!user) {
+      // User deleted but session exists - invalidate session
+      await sessionStore.destroySession(token)
       return res.status(404).json({ error: 'User not found' })
     }
 
     res.json({
       userId: user.id,
+      username: user.username,
       displayName: user.display_name,
       lightningAddress: user.lightning_address
     })
@@ -96,50 +282,79 @@ router.get('/me', async (req, res, next) => {
 
 /**
  * POST /api/auth/logout
- * Invalidate token
+ * Invalidate current session
  */
-router.post('/logout', (req, res) => {
-  const token = req.headers.authorization?.replace('Bearer ', '')
+router.post('/logout', async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '')
 
-  if (token) {
-    tokens.delete(token)
+    if (token) {
+      await sessionStore.destroySession(token)
+      console.log('[AUTH] Session destroyed')
+    }
+
+    res.json({ success: true })
+  } catch (error) {
+    next(error)
   }
+})
 
-  res.json({ success: true })
+/**
+ * POST /api/auth/logout-all
+ * Invalidate all sessions for current user (logout everywhere)
+ */
+router.post('/logout-all', async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '')
+
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' })
+    }
+
+    const session = await sessionStore.getSession(token)
+
+    if (!session) {
+      return res.status(401).json({ error: 'Invalid or expired token' })
+    }
+
+    // Destroy all sessions for this user
+    await sessionStore.destroyAllUserSessions(session.userId)
+
+    console.log(`[AUTH] All sessions destroyed for user: ${session.userId.substring(0, 8)}...`)
+
+    res.json({ success: true, message: 'Logged out from all devices' })
+  } catch (error) {
+    next(error)
+  }
 })
 
 /**
  * Middleware to verify auth token
+ * Attaches userId to request if valid
  */
-export function requireAuth(req, res, next) {
-  const token = req.headers.authorization?.replace('Bearer ', '')
+export async function requireAuth(req, res, next) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '')
 
-  if (!token || !tokens.has(token)) {
-    return res.status(401).json({ error: 'Unauthorized' })
-  }
-
-  const tokenData = tokens.get(token)
-
-  // Token expires after 24 hours
-  if (Date.now() - tokenData.createdAt > 24 * 60 * 60 * 1000) {
-    tokens.delete(token)
-    return res.status(401).json({ error: 'Token expired' })
-  }
-
-  req.userId = tokenData.userId
-  next()
-}
-
-// Cleanup expired tokens periodically
-setInterval(() => {
-  const now = Date.now()
-  const maxAge = 24 * 60 * 60 * 1000 // 24 hours
-
-  for (const [token, data] of tokens.entries()) {
-    if (now - data.createdAt > maxAge) {
-      tokens.delete(token)
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' })
     }
+
+    const session = await sessionStore.getSession(token)
+
+    if (!session) {
+      return res.status(401).json({ error: 'Invalid or expired token' })
+    }
+
+    // Attach user info to request
+    req.userId = session.userId
+    req.sessionToken = token
+
+    next()
+  } catch (error) {
+    console.error('[AUTH] Auth middleware error:', error)
+    return res.status(401).json({ error: 'Authentication failed' })
   }
-}, 60 * 60 * 1000) // Run every hour
+}
 
 export default router

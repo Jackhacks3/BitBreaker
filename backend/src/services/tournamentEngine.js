@@ -147,10 +147,22 @@ export class TournamentEngine {
   }
 
   /**
-   * Process a single payout
+   * Process a single payout with comprehensive audit logging
    */
   async processPayout(payout) {
-    console.log(`Processing payout to ${payout.lightning_address}: ${payout.amount_sats} sats`)
+    const auditData = {
+      payoutId: payout.id,
+      tournamentId: payout.tournament_id,
+      userId: payout.user_id?.substring(0, 8) + '...',
+      place: payout.place,
+      amountSats: parseInt(payout.amount_sats),
+      lightningAddress: payout.lightning_address,
+      displayName: payout.displayName,
+      score: payout.score,
+      timestamp: new Date().toISOString()
+    }
+
+    console.log('[PAYOUT] Processing:', JSON.stringify(auditData))
 
     try {
       const result = await payToAddress(
@@ -161,14 +173,36 @@ export class TournamentEngine {
 
       if (result.success) {
         await db.payouts.markPaid(payout.id, result.paymentHash)
-        console.log(`Payout successful: ${result.paymentHash}`)
+
+        // Comprehensive success log for audit
+        console.log('[PAYOUT] SUCCESS:', JSON.stringify({
+          ...auditData,
+          paymentHash: result.paymentHash,
+          status: 'completed',
+          completedAt: new Date().toISOString()
+        }))
+
         return true
       } else {
-        console.error(`Payout failed: ${result.error}`)
+        // Comprehensive failure log for audit
+        console.error('[PAYOUT] FAILED:', JSON.stringify({
+          ...auditData,
+          error: result.error,
+          status: 'failed',
+          failedAt: new Date().toISOString()
+        }))
+
         return false
       }
     } catch (error) {
-      console.error('Payout error:', error)
+      // Comprehensive error log for audit
+      console.error('[PAYOUT] ERROR:', JSON.stringify({
+        ...auditData,
+        error: error.message,
+        status: 'error',
+        errorAt: new Date().toISOString()
+      }))
+
       return false
     }
   }
