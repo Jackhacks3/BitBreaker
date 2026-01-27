@@ -2,20 +2,200 @@ import { Router } from 'express'
 import crypto from 'crypto'
 import db from '../services/database.js'
 import { requireAuth } from './auth.js'
+import {
+  sanitizeScore,
+  sanitizeDuration,
+  sanitizeLevel
+} from '../utils/sanitize.js'
+import { getBuyInSats, satsToUsd } from '../services/priceService.js'
+import * as cache from '../services/cacheStore.js'
+import {
+  MAX_ATTEMPTS_PER_TOURNAMENT,
+  ATTEMPT_COST_USD,
+  VALIDATION
+} from '../config/constants.js'
 
 const router = Router()
 
 /**
  * Game Routes
  *
- * Handle game session submission and score validation.
- * Includes basic anti-cheat measures.
+ * SECURITY FEATURES:
+ * - Input sanitization and validation
+ * - Anti-cheat score validation
+ * - Rate limiting (applied in index.js)
+ * - Session-bound submissions
+ * - Per-attempt payment tracking
+ * - TTL-based attempt tracking (no memory leaks)
  */
 
-// Score validation constants
-const MAX_SCORE_PER_SECOND = 50 // Maximum reasonable score per second
-const MIN_GAME_DURATION_MS = 5000 // Minimum 5 seconds
-const MAX_SCORE_PER_LEVEL = 1000 // Reasonable max per level
+// Game configuration (from shared constants)
+const GAME_CONFIG = {
+  maxAttemptsPerDay: MAX_ATTEMPTS_PER_TOURNAMENT,
+  attemptCostUsd: ATTEMPT_COST_USD
+}
+
+// Score validation constants (from shared constants)
+const VALIDATION_CONFIG = VALIDATION
+
+// Cache key prefix for active attempts
+const ATTEMPT_PREFIX = 'attempt:'
+const ATTEMPT_TTL = 60 * 60 // 1 hour max game session
+
+/**
+ * GET /api/game/attempts
+ * Get user's attempt status for today
+ */
+router.get('/attempts', requireAuth, async (req, res, next) => {
+  try {
+    const tournament = await db.tournaments.findCurrent()
+
+    if (!tournament || tournament.status !== 'open') {
+      return res.json({
+        attemptsUsed: 0,
+        attemptsRemaining: GAME_CONFIG.maxAttemptsPerDay,
+        maxAttempts: GAME_CONFIG.maxAttemptsPerDay,
+        canPlay: false,
+        reason: 'No active tournament',
+        nextResetAt: null
+      })
+    }
+
+    // Get or check entry
+    const entry = await db.entries.findByUserAndTournament(req.userId, tournament.id)
+
+    const attemptsUsed = entry?.attempts_used || 0
+    const attemptsRemaining = GAME_CONFIG.maxAttemptsPerDay - attemptsUsed
+
+    // Get wallet balance
+    const wallet = await db.wallets.getByUserId(req.userId)
+    const balanceSats = wallet?.balance_sats || 0
+    const { sats: costSats } = await getBuyInSats()
+    const hasBalance = balanceSats >= costSats
+
+    // Calculate next reset time (midnight UTC)
+    const nextResetAt = new Date()
+    nextResetAt.setUTCHours(24, 0, 0, 0)
+
+    res.json({
+      attemptsUsed,
+      attemptsRemaining,
+      maxAttempts: GAME_CONFIG.maxAttemptsPerDay,
+      canPlay: attemptsRemaining > 0 && hasBalance,
+      hasBalance,
+      balanceSats,
+      costSats,
+      costUsd: GAME_CONFIG.attemptCostUsd,
+      nextResetAt: nextResetAt.toISOString(),
+      scores: {
+        attempt1: entry?.attempt_1_score || null,
+        attempt2: entry?.attempt_2_score || null,
+        attempt3: entry?.attempt_3_score || null,
+        best: entry?.best_score || 0
+      }
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/game/start-attempt
+ * Start a new game attempt - deducts $5 from wallet
+ */
+router.post('/start-attempt', requireAuth, async (req, res, next) => {
+  try {
+    const tournament = await db.tournaments.findCurrent()
+
+    if (!tournament || tournament.status !== 'open') {
+      return res.status(400).json({ error: 'No active tournament' })
+    }
+
+    // Get or create entry for this tournament (atomic operation - handles race conditions)
+    // ON CONFLICT in the database layer ensures only one entry is created
+    const entry = await db.entries.getOrCreateEntry(tournament.id, req.userId)
+
+    if (!entry) {
+      console.error(`[GAME] Failed to get/create entry for user ${req.userId.substring(0, 8)}...`)
+      return res.status(500).json({ error: 'Failed to create tournament entry' })
+    }
+
+    // Check attempts limit
+    const attemptsUsed = entry.attempts_used || 0
+    if (attemptsUsed >= GAME_CONFIG.maxAttemptsPerDay) {
+      return res.status(400).json({
+        error: 'Maximum attempts reached for today',
+        attemptsUsed,
+        maxAttempts: GAME_CONFIG.maxAttemptsPerDay
+      })
+    }
+
+    // Get cost in sats
+    const { sats: costSats, usd: costUsd, rate } = await getBuyInSats()
+
+    // Check wallet balance
+    const wallet = await db.wallets.getByUserId(req.userId)
+    const balanceSats = wallet?.balance_sats || 0
+
+    if (balanceSats < costSats) {
+      const { usd: balanceUsd } = await satsToUsd(balanceSats)
+      return res.status(400).json({
+        error: 'Insufficient balance',
+        required: costSats,
+        requiredUsd: costUsd,
+        balance: balanceSats,
+        balanceUsd
+      })
+    }
+
+    // Deduct from wallet
+    await db.wallets.debit(req.userId, costSats, 'game_attempt', `Game attempt ${attemptsUsed + 1}`)
+
+    // Increment attempt counter
+    const updatedEntry = await db.entries.incrementAttempt(entry.id)
+
+    if (!updatedEntry) {
+      // Refund if increment failed
+      await db.wallets.credit(req.userId, costSats, 'refund', 'Attempt start refund')
+      return res.status(500).json({ error: 'Failed to start attempt' })
+    }
+
+    // Update prize pool
+    await db.tournaments.updatePrizePool(tournament.id, costSats)
+
+    // Generate attempt ID
+    const attemptId = crypto.randomBytes(16).toString('hex')
+    const attemptNumber = updatedEntry.attempts_used
+
+    // Track active attempt with TTL (auto-expires after 1 hour)
+    await cache.set(`${ATTEMPT_PREFIX}${attemptId}`, {
+      userId: req.userId,
+      entryId: entry.id,
+      attemptNumber,
+      startedAt: Date.now()
+    }, ATTEMPT_TTL)
+
+    // Get updated wallet and jackpot
+    const newWallet = await db.wallets.getByUserId(req.userId)
+    const { usd: jackpotUsd } = await satsToUsd(parseInt(tournament.prize_pool_sats) + costSats)
+
+    console.log(`[GAME] Attempt ${attemptNumber} started for user ${req.userId.substring(0, 8)}... ($${costUsd})`)
+
+    res.json({
+      success: true,
+      attemptId,
+      attemptNumber,
+      attemptsRemaining: GAME_CONFIG.maxAttemptsPerDay - attemptNumber,
+      costSats,
+      costUsd,
+      newBalanceSats: newWallet.balance_sats,
+      currentJackpotUsd: jackpotUsd,
+      exchangeRate: rate
+    })
+  } catch (error) {
+    next(error)
+  }
+})
 
 /**
  * POST /api/game/submit
@@ -23,19 +203,48 @@ const MAX_SCORE_PER_LEVEL = 1000 // Reasonable max per level
  */
 router.post('/submit', requireAuth, async (req, res, next) => {
   try {
-    const { score, level, duration, inputLog, frameCount } = req.body
+    const { score, level, duration, inputLog, frameCount, attemptId } = req.body
 
-    // Validate required fields
-    if (typeof score !== 'number' || score < 0) {
-      return res.status(400).json({ error: 'Invalid score' })
+    // Sanitize and validate score
+    const scoreResult = sanitizeScore(score)
+    if (!scoreResult.valid) {
+      return res.status(400).json({ error: scoreResult.error })
     }
 
-    if (typeof level !== 'number' || level < 1) {
-      return res.status(400).json({ error: 'Invalid level' })
+    // Sanitize and validate level
+    const levelResult = sanitizeLevel(level)
+    if (!levelResult.valid) {
+      return res.status(400).json({ error: levelResult.error })
     }
 
-    if (typeof duration !== 'number' || duration < MIN_GAME_DURATION_MS) {
-      return res.status(400).json({ error: 'Game too short' })
+    // Sanitize and validate duration
+    const durationResult = sanitizeDuration(duration)
+    if (!durationResult.valid) {
+      return res.status(400).json({ error: durationResult.error })
+    }
+
+    // Use sanitized values
+    const cleanScore = scoreResult.value
+    const cleanLevel = levelResult.value
+    const cleanDuration = durationResult.value
+
+    // Validate frame count if provided
+    let cleanFrameCount = null
+    if (frameCount !== undefined) {
+      if (typeof frameCount !== 'number' || !Number.isInteger(frameCount) || frameCount < 0) {
+        return res.status(400).json({ error: 'Invalid frame count' })
+      }
+      cleanFrameCount = frameCount
+    }
+
+    // SECURITY: Limit inputLog size to prevent memory exhaustion
+    if (inputLog !== undefined) {
+      if (!Array.isArray(inputLog)) {
+        return res.status(400).json({ error: 'Input log must be an array' })
+      }
+      if (inputLog.length > 50000) {
+        return res.status(400).json({ error: 'Input log exceeds maximum size' })
+      }
     }
 
     // Get current tournament
@@ -52,12 +261,53 @@ router.post('/submit', requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: 'No tournament entry found' })
     }
 
-    // Basic anti-cheat validation
-    const validation = validateScore(score, level, duration, frameCount)
+    // Validate attemptId if provided (new flow)
+    let attemptNumber = null
+    if (attemptId) {
+      const activeAttempt = await cache.get(`${ATTEMPT_PREFIX}${attemptId}`)
+      if (!activeAttempt) {
+        return res.status(400).json({ error: 'Invalid or expired attempt ID' })
+      }
+      if (activeAttempt.userId !== req.userId) {
+        console.warn(`[SECURITY] User ${req.userId.substring(0, 8)}... tried to submit someone else's attempt`)
+        return res.status(403).json({ error: 'Attempt does not belong to this user' })
+      }
+      attemptNumber = activeAttempt.attemptNumber
+      // Remove from active attempts (TTL handles cleanup, but remove early for security)
+      await cache.del(`${ATTEMPT_PREFIX}${attemptId}`)
+    }
+
+    // Anti-cheat validation
+    const validation = validateGameSession({
+      score: cleanScore,
+      level: cleanLevel,
+      duration: cleanDuration,
+      frameCount: cleanFrameCount,
+      inputLog
+    })
 
     if (!validation.valid) {
-      console.warn(`Suspicious score from user ${req.userId}:`, validation.reason)
-      return res.status(400).json({ error: 'Score validation failed' })
+      // Log without exposing user ID - use hashed session identifier for correlation
+      const sessionHash = crypto.createHash('sha256').update(req.userId + Date.now().toString()).digest('hex').substring(0, 12)
+      console.warn(`[ANTICHEAT] Suspicious submission [session:${sessionHash}]:`, {
+        reasons: validation.reasons,
+        score: cleanScore,
+        duration: cleanDuration,
+        confidence: validation.confidence
+      })
+      return res.status(400).json({
+        error: 'Score validation failed',
+        code: 'VALIDATION_FAILED'
+      })
+    }
+
+    // Log warnings without user identification
+    if (validation.warnings.length > 0) {
+      console.log(`[ANTICHEAT] Validation warnings:`, {
+        warnings: validation.warnings,
+        score: cleanScore,
+        confidence: validation.confidence
+      })
     }
 
     // Create input hash for replay verification
@@ -66,17 +316,31 @@ router.post('/submit', requireAuth, async (req, res, next) => {
       : null
 
     // Record game session
-    await db.sessions.create(entry.id, score, level, duration, inputHash)
+    await db.sessions.create(entry.id, cleanScore, cleanLevel, cleanDuration, inputHash)
 
-    // Update best score
-    const updatedEntry = await db.entries.updateBestScore(entry.id, score)
+    // Update score - use attempt-specific recording if attemptId was provided
+    let updatedEntry
+    if (attemptNumber) {
+      updatedEntry = await db.entries.recordAttemptScore(entry.id, attemptNumber, cleanScore)
+    } else {
+      // Legacy flow - just update best score
+      updatedEntry = await db.entries.updateBestScore(entry.id, cleanScore)
+    }
+
+    console.log(`[GAME] Score submitted: ${cleanScore} by user ${req.userId.substring(0, 8)}... (attempt: ${attemptNumber || 'legacy'}, best: ${updatedEntry.best_score})`)
 
     res.json({
       success: true,
-      score,
+      score: cleanScore,
       bestScore: updatedEntry.best_score,
       attempts: updatedEntry.attempts,
-      isNewBest: score >= updatedEntry.best_score
+      attemptNumber,
+      isNewBest: cleanScore >= updatedEntry.best_score,
+      scores: {
+        attempt1: updatedEntry.attempt_1_score,
+        attempt2: updatedEntry.attempt_2_score,
+        attempt3: updatedEntry.attempt_3_score
+      }
     })
   } catch (error) {
     next(error)
@@ -84,37 +348,126 @@ router.post('/submit', requireAuth, async (req, res, next) => {
 })
 
 /**
- * Validate score against expected game mechanics
+ * Validate game session against expected mechanics
+ *
+ * @param {Object} data - Game session data
+ * @returns {{valid: boolean, reasons: string[], warnings: string[], confidence: number}}
  */
-function validateScore(score, level, duration, frameCount) {
-  // Check score rate (points per second)
+function validateGameSession(data) {
+  const { score, level, duration, frameCount, inputLog } = data
+  const errors = []
+  const warnings = []
+
+  // 1. Score rate validation (points per second)
   const durationSec = duration / 1000
   const scorePerSecond = score / durationSec
 
-  if (scorePerSecond > MAX_SCORE_PER_SECOND) {
-    return { valid: false, reason: `Score rate too high: ${scorePerSecond.toFixed(1)}/sec` }
+  if (scorePerSecond > VALIDATION_CONFIG.maxScorePerSecond) {
+    errors.push(`Score rate too high: ${scorePerSecond.toFixed(1)}/sec (max: ${VALIDATION_CONFIG.maxScorePerSecond})`)
+  } else if (scorePerSecond > VALIDATION_CONFIG.maxScorePerSecond * 0.8) {
+    warnings.push(`Score rate near limit: ${scorePerSecond.toFixed(1)}/sec`)
   }
 
-  // Check level vs score correlation
-  // Each level should contribute roughly 100-500 points
+  // 2. Level vs score correlation
   const avgScorePerLevel = score / level
 
-  if (avgScorePerLevel > MAX_SCORE_PER_LEVEL) {
-    return { valid: false, reason: `Score per level too high: ${avgScorePerLevel.toFixed(0)}` }
+  if (avgScorePerLevel > VALIDATION_CONFIG.maxScorePerLevel) {
+    errors.push(`Score per level too high: ${avgScorePerLevel.toFixed(0)} (max: ${VALIDATION_CONFIG.maxScorePerLevel})`)
+  } else if (avgScorePerLevel > VALIDATION_CONFIG.maxScorePerLevel * 0.8) {
+    warnings.push(`Score per level near limit: ${avgScorePerLevel.toFixed(0)}`)
   }
 
-  // Check frame count (should be roughly duration * 60fps / 1000)
-  if (frameCount) {
-    const expectedFrames = (duration / 1000) * 60
+  // 3. Frame count validation (detect speedhacks)
+  if (frameCount !== null) {
+    const expectedFrames = durationSec * VALIDATION_CONFIG.expectedFrameRate
     const frameDiff = Math.abs(frameCount - expectedFrames) / expectedFrames
 
-    if (frameDiff > 0.5) { // More than 50% deviation
-      return { valid: false, reason: `Frame count suspicious: ${frameCount} vs expected ${expectedFrames.toFixed(0)}` }
+    if (frameDiff > VALIDATION_CONFIG.frameTolerance) {
+      errors.push(`Frame count suspicious: ${frameCount} vs expected ${expectedFrames.toFixed(0)} (${(frameDiff * 100).toFixed(1)}% off)`)
+    } else if (frameDiff > VALIDATION_CONFIG.frameTolerance * 0.5) {
+      warnings.push(`Frame count variance: ${(frameDiff * 100).toFixed(1)}%`)
     }
   }
 
-  // Score is plausible
-  return { valid: true }
+  // 4. Input log analysis (if provided)
+  if (inputLog && Array.isArray(inputLog) && inputLog.length > 0) {
+    const inputAnalysis = analyzeInputPattern(inputLog, duration)
+
+    if (inputAnalysis.superhuman) {
+      errors.push('Input speed exceeds human capability')
+    }
+
+    if (inputAnalysis.tooRegular) {
+      warnings.push('Suspiciously regular input timing (possible automation)')
+    }
+
+    if (inputAnalysis.suspiciousPatterns) {
+      warnings.push('Unusual input patterns detected')
+    }
+  }
+
+  // Calculate confidence score (0-100)
+  let confidence = 100
+  confidence -= errors.length * 30
+  confidence -= warnings.length * 10
+  confidence = Math.max(0, Math.min(100, confidence))
+
+  return {
+    valid: errors.length === 0,
+    reasons: errors,
+    warnings,
+    confidence
+  }
+}
+
+/**
+ * Analyze input patterns for bot detection
+ *
+ * @param {Array} inputs - Array of input events
+ * @param {number} duration - Game duration in ms
+ * @returns {{superhuman: boolean, tooRegular: boolean, suspiciousPatterns: boolean}}
+ */
+function analyzeInputPattern(inputs, duration) {
+  if (inputs.length < 10) {
+    return { superhuman: false, tooRegular: false, suspiciousPatterns: false }
+  }
+
+  // Calculate time intervals between inputs
+  const intervals = []
+  for (let i = 1; i < inputs.length; i++) {
+    const prevTime = inputs[i - 1].t || inputs[i - 1].timestamp || 0
+    const currTime = inputs[i].t || inputs[i].timestamp || 0
+    if (currTime > prevTime) {
+      intervals.push(currTime - prevTime)
+    }
+  }
+
+  if (intervals.length < 5) {
+    return { superhuman: false, tooRegular: false, suspiciousPatterns: false }
+  }
+
+  // Check for superhuman speed (minimum human reaction time ~50ms)
+  const minInterval = Math.min(...intervals)
+  const superhuman = minInterval < 16 // Less than 1 frame at 60fps is suspicious
+
+  // Check for too-regular patterns (bots often have constant intervals)
+  const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length
+  const variance = intervals.reduce((sum, i) => sum + Math.pow(i - avgInterval, 2), 0) / intervals.length
+  const stdDev = Math.sqrt(variance)
+  const coefficientOfVariation = stdDev / avgInterval
+
+  // Humans typically have CV > 0.2, bots are more regular
+  const tooRegular = coefficientOfVariation < 0.05 && intervals.length > 20
+
+  // Check input rate
+  const inputsPerSecond = inputs.length / (duration / 1000)
+  const suspiciousPatterns = inputsPerSecond > VALIDATION_CONFIG.maxInputsPerSecond
+
+  return {
+    superhuman,
+    tooRegular,
+    suspiciousPatterns
+  }
 }
 
 /**
@@ -149,5 +502,7 @@ router.get('/stats', requireAuth, async (req, res, next) => {
     next(error)
   }
 })
+
+// Cache store handles TTL-based cleanup automatically - no manual cleanup needed
 
 export default router
