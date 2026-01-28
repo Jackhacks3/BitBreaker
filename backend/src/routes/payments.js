@@ -4,6 +4,7 @@ import db from '../services/database.js'
 import { requireAuth } from './auth.js'
 import { createInvoice, checkPayment, payToAddress } from '../services/lightning.js'
 import * as cache from '../services/cacheStore.js'
+import { WEBHOOK_IDEMPOTENCY_TTL_SECONDS, INVOICE_TTL_SECONDS } from '../config/constants.js'
 
 const router = Router()
 
@@ -21,8 +22,8 @@ const router = Router()
 // Cache key prefixes
 const INVOICE_PREFIX = 'invoice:'
 const WEBHOOK_PREFIX = 'webhook:'
-const INVOICE_TTL = 10 * 60 // 10 minutes
-const WEBHOOK_TTL = 60 * 60 // 1 hour idempotency window
+const INVOICE_TTL = INVOICE_TTL_SECONDS // From constants.js
+const WEBHOOK_TTL = WEBHOOK_IDEMPOTENCY_TTL_SECONDS // 24 hours from constants.js
 
 /**
  * Verify webhook signature from LNbits
@@ -30,34 +31,20 @@ const WEBHOOK_TTL = 60 * 60 // 1 hour idempotency window
  * CRITICAL: Without this, attackers can fake payment confirmations
  * and get free tournament entries
  *
+ * SECURITY: Webhook signature verification is ALWAYS required.
+ * The ALLOW_UNSIGNED_WEBHOOKS bypass has been removed for security.
+ *
  * @param {Request} req - Express request
  * @returns {boolean} - True if signature is valid
  */
 function verifyWebhookSignature(req) {
   const webhookSecret = process.env.LNBITS_WEBHOOK_SECRET
-  const isProduction = process.env.NODE_ENV === 'production'
-  const allowUnsigned = process.env.ALLOW_UNSIGNED_WEBHOOKS === 'true'
 
-  // SECURITY: Never allow unsigned webhooks in production, regardless of config
-  if (isProduction && allowUnsigned) {
-    console.error('[SECURITY] CRITICAL: ALLOW_UNSIGNED_WEBHOOKS=true is forbidden in production - ignoring')
-  }
-
-  // If no secret configured, check if explicitly allowed
+  // SECURITY: Webhook secret is REQUIRED in all environments
   if (!webhookSecret) {
-    if (isProduction) {
-      console.error('[SECURITY] LNBITS_WEBHOOK_SECRET not configured - rejecting webhook in production')
-      return false
-    }
-
-    if (!allowUnsigned) {
-      console.error('[SECURITY] LNBITS_WEBHOOK_SECRET not configured - set ALLOW_UNSIGNED_WEBHOOKS=true to enable dev mode')
-      return false
-    }
-
-    // Only accept unsigned webhooks if explicitly enabled for development (non-production only)
-    console.warn('[SECURITY] Accepting unsigned webhook (ALLOW_UNSIGNED_WEBHOOKS=true, dev mode)')
-    return true
+    console.error('[SECURITY] LNBITS_WEBHOOK_SECRET not configured - rejecting webhook')
+    console.error('[SECURITY] Configure LNBITS_WEBHOOK_SECRET in your environment')
+    return false
   }
 
   // Get signature from header
@@ -71,8 +58,11 @@ function verifyWebhookSignature(req) {
     return false
   }
 
-  // Calculate expected signature
-  const payload = JSON.stringify(req.body)
+  // CRITICAL: Use rawBody for signature verification
+  // JSON.stringify(req.body) doesn't guarantee key ordering and can fail verification
+  // rawBody is stored in index.js body parser verify callback
+  const payload = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(req.body)
+
   const expectedSignature = crypto
     .createHmac('sha256', webhookSecret)
     .update(payload)
@@ -112,18 +102,18 @@ router.post('/buy-in', requireAuth, async (req, res, next) => {
     const tournament = await db.tournaments.findCurrent()
 
     if (!tournament) {
-      return res.status(400).json({ error: 'No active tournament' })
+      return res.status(400).json({ error: 'No active tournament', code: 'NO_TOURNAMENT' })
     }
 
     if (tournament.status !== 'open') {
-      return res.status(400).json({ error: 'Tournament is closed' })
+      return res.status(400).json({ error: 'Tournament is closed', code: 'TOURNAMENT_CLOSED' })
     }
 
     // Check if user already has entry
     const existingEntry = await db.entries.findByUserAndTournament(req.userId, tournament.id)
 
     if (existingEntry) {
-      return res.status(400).json({ error: 'You already have an entry in this tournament' })
+      return res.status(400).json({ error: 'You already have an entry in this tournament', code: 'DUPLICATE_ENTRY' })
     }
 
     // Check for existing pending invoice for this user/tournament
@@ -186,7 +176,7 @@ router.get('/status/:hash', requireAuth, async (req, res, next) => {
 
     // Validate hash format (64 hex characters)
     if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) {
-      return res.status(400).json({ error: 'Invalid payment hash format' })
+      return res.status(400).json({ error: 'Invalid payment hash format', code: 'INVALID_HASH' })
     }
 
     const pendingInfo = await cache.get(`${INVOICE_PREFIX}${hash}`)
@@ -200,20 +190,20 @@ router.get('/status/:hash', requireAuth, async (req, res, next) => {
           return res.json({ paid: true, entryId: entry.id })
         }
       }
-      return res.status(404).json({ error: 'Invoice not found' })
+      return res.status(404).json({ error: 'Invoice not found', code: 'INVOICE_NOT_FOUND' })
     }
 
     // Verify this invoice belongs to requesting user
     if (pendingInfo.userId !== req.userId) {
       console.warn(`[SECURITY] User ${req.userId.substring(0, 8)}... tried to check someone else's invoice`)
-      return res.status(403).json({ error: 'Access denied' })
+      return res.status(403).json({ error: 'Access denied', code: 'UNAUTHORIZED' })
     }
 
     // Check if expired (cache TTL handles this, but double-check)
     const age = Date.now() - pendingInfo.createdAt
     if (age > INVOICE_TTL * 1000) {
       await cache.del(`${INVOICE_PREFIX}${hash}`)
-      return res.json({ paid: false, expired: true })
+      return res.json({ paid: false, expired: true, code: 'INVOICE_EXPIRED' })
     }
 
     // Check if payment received via LNbits API
@@ -249,7 +239,7 @@ router.post('/webhook', async (req, res, next) => {
     // CRITICAL: Verify webhook signature
     if (!verifyWebhookSignature(req)) {
       console.error('[SECURITY] Invalid webhook signature - rejecting')
-      return res.status(401).json({ error: 'Invalid signature' })
+      return res.status(401).json({ error: 'Invalid signature', code: 'INVALID_SIGNATURE' })
     }
 
     const { payment_hash, paid } = req.body

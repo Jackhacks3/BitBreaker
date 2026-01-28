@@ -267,6 +267,9 @@ export class DatabaseError extends Error {
 }
 
 // Query helpers with error handling
+// SECURITY: In production, don't log query text to prevent info leaks
+const isProduction = process.env.NODE_ENV === 'production'
+
 export async function query(text, params) {
   if (useMockDb) {
     throw new Error('Use specific db functions in mock mode')
@@ -275,14 +278,20 @@ export async function query(text, params) {
   try {
     return await pool.query(text, params)
   } catch (error) {
-    console.error('[DB] Query failed:', {
-      query: text.substring(0, 100),
-      code: error.code,
-      message: error.message
-    })
+    if (isProduction) {
+      // Production: Only log error code, not query text
+      console.error('[DB] Query failed:', { code: error.code })
+    } else {
+      // Development: Include query for debugging
+      console.error('[DB] Query failed:', {
+        query: text.substring(0, 100),
+        code: error.code,
+        message: error.message
+      })
+    }
     throw new DatabaseError('Database query failed', {
       cause: error,
-      query: text,
+      query: isProduction ? undefined : text,
       code: error.code
     })
   }
@@ -297,14 +306,18 @@ export async function queryOne(text, params) {
     const result = await pool.query(text, params)
     return result.rows[0] || null
   } catch (error) {
-    console.error('[DB] Query failed:', {
-      query: text.substring(0, 100),
-      code: error.code,
-      message: error.message
-    })
+    if (isProduction) {
+      console.error('[DB] Query failed:', { code: error.code })
+    } else {
+      console.error('[DB] Query failed:', {
+        query: text.substring(0, 100),
+        code: error.code,
+        message: error.message
+      })
+    }
     throw new DatabaseError('Database query failed', {
       cause: error,
-      query: text,
+      query: isProduction ? undefined : text,
       code: error.code
     })
   }
@@ -319,14 +332,18 @@ export async function queryMany(text, params) {
     const result = await pool.query(text, params)
     return result.rows
   } catch (error) {
-    console.error('[DB] Query failed:', {
-      query: text.substring(0, 100),
-      code: error.code,
-      message: error.message
-    })
+    if (isProduction) {
+      console.error('[DB] Query failed:', { code: error.code })
+    } else {
+      console.error('[DB] Query failed:', {
+        query: text.substring(0, 100),
+        code: error.code,
+        message: error.message
+      })
+    }
     throw new DatabaseError('Database query failed', {
       cause: error,
-      query: text,
+      query: isProduction ? undefined : text,
       code: error.code
     })
   }
@@ -1090,4 +1107,20 @@ users.createFromLnurl = async function(linkingKey, displayName) {
   )
 }
 
-export default { query, queryOne, queryMany, users, tournaments, entries, sessions, payouts, whitelist, lnurlChallenges, wallets }
+/**
+ * Close database connection pool
+ * Called during graceful shutdown
+ */
+export async function close() {
+  if (pool) {
+    try {
+      await pool.end()
+      pool = null
+      console.log('[DB] Connection pool closed')
+    } catch (error) {
+      console.error('[DB] Error closing connection pool:', error.message)
+    }
+  }
+}
+
+export default { query, queryOne, queryMany, users, tournaments, entries, sessions, payouts, whitelist, lnurlChallenges, wallets, close }

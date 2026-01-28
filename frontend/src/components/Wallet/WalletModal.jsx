@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
 
 const API_BASE = '/api'
+
+// Maximum poll attempts (60 * 3 seconds = 3 minutes max)
+const MAX_POLL_ATTEMPTS = 60
 
 /**
  * WalletModal Component
@@ -21,25 +25,34 @@ function WalletModal({ user, onClose, onUpdate }) {
   const [depositHash, setDepositHash] = useState(null)
   const [checkingPayment, setCheckingPayment] = useState(false)
   const [depositSuccess, setDepositSuccess] = useState(false)
-  const [qrLoaded, setQrLoaded] = useState(false)
   const [generatingInvoice, setGeneratingInvoice] = useState(false)
-
-  // Memoize QR code URL to prevent re-renders
-  const qrCodeUrl = useMemo(() => {
-    if (!depositInvoice) return null
-    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(depositInvoice)}`
-  }, [depositInvoice])
+  const pollCountRef = useRef(0)
 
   // Fetch wallet data on mount
   useEffect(() => {
     fetchWalletData()
   }, [])
 
-  // Poll for payment when we have an invoice
+  // Poll for payment when we have an invoice (with timeout protection)
   useEffect(() => {
     if (!depositHash || !user?.token) return
 
+    // Reset poll count when new invoice is created
+    pollCountRef.current = 0
+
     const pollInterval = setInterval(async () => {
+      pollCountRef.current++
+
+      // Timeout protection: stop polling after MAX_POLL_ATTEMPTS
+      if (pollCountRef.current >= MAX_POLL_ATTEMPTS) {
+        clearInterval(pollInterval)
+        setError('Payment check timed out. Please refresh and try again.')
+        setDepositInvoice(null)
+        setDepositHash(null)
+        setCheckingPayment(false)
+        return
+      }
+
       setCheckingPayment(true)
       try {
         const res = await fetch(`${API_BASE}/wallet/deposit/status/${depositHash}`, {
@@ -156,7 +169,7 @@ function WalletModal({ user, onClose, onUpdate }) {
     setDepositInvoice(null)
     setDepositHash(null)
     setDepositSuccess(false)
-    setQrLoaded(false)
+    pollCountRef.current = 0
   }
 
   const formatDate = (dateStr) => {
@@ -301,39 +314,19 @@ function WalletModal({ user, onClose, onUpdate }) {
                   Pay ${depositAmount.toFixed(2)} via Lightning
                 </h3>
 
-                {/* QR Code with loading state */}
+                {/* QR Code - Client-side generation (no external API) */}
                 <div style={{
                   background: '#fff',
                   padding: '1rem',
                   borderRadius: '10px',
                   display: 'inline-block',
-                  marginBottom: '1rem',
-                  position: 'relative',
-                  minWidth: '200px',
-                  minHeight: '200px'
+                  marginBottom: '1rem'
                 }}>
-                  {!qrLoaded && (
-                    <div style={{
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: 'translate(-50%, -50%)',
-                      color: '#333'
-                    }}>
-                      Loading QR...
-                    </div>
-                  )}
-                  <img
-                    src={qrCodeUrl}
-                    alt="Lightning Invoice QR"
-                    onLoad={() => setQrLoaded(true)}
-                    style={{
-                      display: 'block',
-                      width: '200px',
-                      height: '200px',
-                      opacity: qrLoaded ? 1 : 0,
-                      transition: 'opacity 0.3s ease'
-                    }}
+                  <QRCodeSVG
+                    value={depositInvoice}
+                    size={200}
+                    level="M"
+                    includeMargin={false}
                   />
                 </div>
 

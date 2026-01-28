@@ -1,3 +1,13 @@
+# Development Docker Compose Configuration
+# IMPORTANT: Create a .env file with your credentials - NEVER commit .env files
+#
+# Required environment variables:
+#   - DATABASE_URL (or use default local postgres)
+#   - LNBITS_URL
+#   - LNBITS_API_KEY
+#   - LNBITS_ADMIN_KEY
+#   - LNBITS_WEBHOOK_SECRET
+
 services:
   # PostgreSQL Database
   postgres:
@@ -27,14 +37,14 @@ services:
       - NODE_ENV=development
       - PORT=4000
       - FRONTEND_URL=http://localhost:3000
-      - BUY_IN_SATS=100
-      # Neon PostgreSQL
-      - DATABASE_URL=postgresql://neondb_owner:npg_87sauHxUcTnr@ep-floral-bonus-ahnsyf45-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require
-      # LNbits Configuration
-      - LNBITS_URL=https://demo.lnbits.com
-      - LNBITS_API_KEY=38ef31f4a6dd47ad8b713ba89645aa21
-      - LNBITS_ADMIN_KEY=d3422d9c267744eaae36ba2e9ae151ee
-      - LNBITS_WEBHOOK_SECRET=b07e9e7969f20134836f868632c21b4c704570307813f1917992468222e4ddc8
+      - BUY_IN_SATS=${BUY_IN_SATS:-100}
+      # Database - use env var or local postgres
+      - DATABASE_URL=${DATABASE_URL:-postgresql://brickbreaker:brickbreaker@postgres:5432/brickbreaker}
+      # LNbits Configuration - MUST be set via .env file
+      - LNBITS_URL=${LNBITS_URL}
+      - LNBITS_API_KEY=${LNBITS_API_KEY}
+      - LNBITS_ADMIN_KEY=${LNBITS_ADMIN_KEY}
+      - LNBITS_WEBHOOK_SECRET=${LNBITS_WEBHOOK_SECRET}
     volumes:
       - ./backend:/app
       - /app/node_modules

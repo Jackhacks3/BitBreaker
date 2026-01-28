@@ -6,15 +6,30 @@
  * - Secure error handling
  * - Request validation
  * - Security logging
+ * - Request correlation IDs
  *
  * SECURITY FEATURES:
  * - Double-submit cookie CSRF protection
  * - Timing-safe token comparison
  * - Error message sanitization (no info leaks)
  * - Suspicious activity logging
+ * - Request correlation for distributed tracing
  */
 
-import crypto from 'crypto'
+import crypto, { randomUUID } from 'crypto'
+
+// ==================== REQUEST CORRELATION ====================
+
+/**
+ * Add correlation ID to each request for distributed tracing
+ * Allows tracking requests across services and logs
+ */
+export function requestCorrelation(req, res, next) {
+  // Use existing correlation ID from header or generate new one
+  req.correlationId = req.headers['x-correlation-id'] || randomUUID()
+  res.setHeader('X-Correlation-Id', req.correlationId)
+  next()
+}
 
 // ==================== CSRF PROTECTION ====================
 
@@ -330,5 +345,6 @@ export default {
   requireJson,
   validateHeaders,
   securityLogger,
-  notFoundHandler
+  notFoundHandler,
+  requestCorrelation
 }

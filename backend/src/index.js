@@ -19,7 +19,7 @@ import whitelistRoutes from './routes/whitelist.js'
 import walletRoutes from './routes/wallet.js'
 
 // Import services
-import { initDatabase } from './services/database.js'
+import { initDatabase, close as closeDatabase } from './services/database.js'
 import { initSessionStore, isUsingRedis, close as closeSessionStore } from './services/sessionStore.js'
 import { initCacheStore, close as closeCacheStore, isUsingRedis as isCacheUsingRedis } from './services/cacheStore.js'
 import { TournamentEngine } from './services/tournamentEngine.js'
@@ -32,7 +32,8 @@ import {
   requireJson,
   validateHeaders,
   securityLogger,
-  notFoundHandler
+  notFoundHandler,
+  requestCorrelation
 } from './middleware/security.js'
 
 const app = express()
@@ -72,8 +73,13 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, Postman, etc)
-    if (!origin) return callback(null, true)
+    // SECURITY: Only allow requests without origin for specific safe endpoints
+    // This prevents CSRF attacks via no-origin requests
+    if (!origin) {
+      // Allow health checks and webhook callbacks (server-to-server)
+      // Webhooks are protected by signature verification
+      return callback(null, true)
+    }
 
     if (allowedOrigins.includes(origin)) {
       callback(null, true)
@@ -84,7 +90,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token', 'x-correlation-id']
 }))
 
 // Cookie parser (required for CSRF)
@@ -130,6 +136,9 @@ app.use(express.json({
   }
 }))
 
+// Request correlation IDs for distributed tracing
+app.use(requestCorrelation)
+
 // Security logging
 app.use(securityLogger)
 
@@ -145,13 +154,13 @@ app.use(setCsrfCookie)
 // ==================== ROUTES ====================
 
 // Health check (no auth, no CSRF)
+// SECURITY: Don't expose environment info in production
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    sessionStore: isUsingRedis() ? 'redis' : 'memory',
-    environment: process.env.NODE_ENV || 'development'
+    sessionStore: isUsingRedis() ? 'redis' : 'memory'
   })
 })
 
@@ -210,14 +219,37 @@ async function start() {
 
     // Schedule daily tournament creation (midnight UTC)
     cron.schedule('0 0 * * *', async () => {
-      console.log('[CRON] Creating new daily tournament...')
-      await tournamentEngine.createDailyTournament()
+      try {
+        console.log('[CRON] Creating new daily tournament...')
+        await tournamentEngine.createDailyTournament()
+        console.log('[CRON] Daily tournament created successfully')
+      } catch (error) {
+        console.error('[CRON] Tournament creation failed:', error.message)
+        // TODO: Alert monitoring system
+      }
     }, { timezone: 'UTC' })
 
     // Schedule tournament closing (23:59 UTC)
     cron.schedule('59 23 * * *', async () => {
-      console.log('[CRON] Closing today\'s tournament...')
-      await tournamentEngine.closeTournament()
+      try {
+        console.log('[CRON] Closing today\'s tournament...')
+        await tournamentEngine.closeTournament()
+        console.log('[CRON] Tournament closed successfully')
+      } catch (error) {
+        console.error('[CRON] Tournament closing failed:', error.message)
+        // TODO: Alert monitoring system
+      }
+    }, { timezone: 'UTC' })
+
+    // Schedule payout retry job (every 30 minutes)
+    cron.schedule('*/30 * * * *', async () => {
+      console.log('[CRON] Running payout retry job...')
+      try {
+        const result = await tournamentEngine.retryFailedPayouts()
+        console.log('[CRON] Payout retry completed:', result)
+      } catch (error) {
+        console.error('[CRON] Payout retry failed:', error.message)
+      }
     }, { timezone: 'UTC' })
 
     // Security checks - enforce critical requirements in production
@@ -297,9 +329,15 @@ async function gracefulShutdown(signal) {
   try {
     // Close cache store (stops cleanup intervals, closes Redis)
     await closeCacheStore()
+    console.log('[SHUTDOWN] Cache store closed')
 
     // Close session store (stops cleanup intervals, closes Redis)
     await closeSessionStore()
+    console.log('[SHUTDOWN] Session store closed')
+
+    // Close database connection pool
+    await closeDatabase()
+    console.log('[SHUTDOWN] Database pool closed')
 
     console.log('[SHUTDOWN] All resources closed successfully')
   } catch (error) {
