@@ -4,6 +4,7 @@ import Login from './components/Auth/Login'
 import Leaderboard from './components/Tournament/Leaderboard'
 import WalletModal from './components/Wallet/WalletModal'
 import RulesModal from './components/Rules/RulesModal'
+import PlayerGuideModal from './components/Guide/PlayerGuideModal'
 import './App.css'
 
 const API_URL = '/api'
@@ -40,6 +41,7 @@ function App() {
   // UI state
   const [showWallet, setShowWallet] = useState(false)
   const [showRules, setShowRules] = useState(false)
+  const [showGuide, setShowGuide] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentScore, setCurrentScore] = useState(0)
   const [currentAttemptId, setCurrentAttemptId] = useState(null)
@@ -281,7 +283,7 @@ function App() {
           <span className="jackpot-label">JACKPOT</span>
           <span className="jackpot-amount">${tournament?.jackpotUsd?.toFixed(2) || '0.00'}</span>
         </div>
-        <h1 className="title">BRICK BREAKER</h1>
+        <h1 className="title">BIT BREAKER</h1>
         <div className="timer-display">
           <span className="timer-label">ENDS IN</span>
           <CountdownTimer endTime={tournament?.endTime} />
@@ -304,7 +306,7 @@ function App() {
             </div>
           ) : (
             <div className="game-placeholder">
-              <h2>ENDLESS BRICK BREAKER</h2>
+              <h2>ENDLESS BIT BREAKER</h2>
               <p className="game-tagline">$5 per attempt • 3 max daily • Top 3 win the jackpot!</p>
 
               {/* Attempt Indicators */}
@@ -389,11 +391,13 @@ function App() {
               💰 ${walletBalance.sats > 0 ? (walletBalance.sats / ((costSats || 5705) / (costUsd || 5))).toFixed(2) : '0.00'}
             </button>
             <span className="username">{user.displayName}</span>
+            <button onClick={() => setShowGuide(true)} className="btn-footer">❓ Help</button>
             <button onClick={() => setShowRules(true)} className="btn-footer">📖 Rules</button>
             <button onClick={handleLogout} className="btn-footer btn-logout">Logout</button>
           </>
         ) : (
           <>
+            <button onClick={() => setShowGuide(true)} className="btn-footer">❓ Help</button>
             <button onClick={() => setShowRules(true)} className="btn-footer">📖 Rules</button>
             <Login onLogin={handleLogin} />
           </>
@@ -431,6 +435,11 @@ function App() {
       {/* Rules Modal */}
       {showRules && (
         <RulesModal onClose={() => setShowRules(false)} />
+      )}
+
+      {/* Player Guide Modal */}
+      {showGuide && (
+        <PlayerGuideModal onClose={() => setShowGuide(false)} />
       )}
     </div>
   )

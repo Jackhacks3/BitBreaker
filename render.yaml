@@ -1,5 +1,6 @@
 # Render.com Blueprint
 # Deploy with: Connect repo to Render and it auto-deploys
+# Frontend is deployed separately on Vercel
 
 services:
   # Backend API
@@ -16,39 +17,30 @@ services:
         value: production
       - key: PORT
         value: 4000
+      # CORS - UPDATE THIS to your Vercel subdomain
       - key: FRONTEND_URL
-        fromService:
-          name: brick-breaker-frontend
-          type: web
-          property: host
+        value: https://game.yourdomain.com
       - key: DATABASE_URL
         fromDatabase:
           name: brick-breaker-db
           property: connectionString
+      # Pricing
+      - key: ATTEMPT_COST_USD
+        value: "5.00"
+      - key: BTC_FALLBACK_PRICE
+        value: "100000"
+      # LNbits Configuration (manual entry in Render dashboard)
       - key: LNBITS_URL
         sync: false
       - key: LNBITS_API_KEY
         sync: false
       - key: LNBITS_ADMIN_KEY
         sync: false
-      - key: BUY_IN_SATS
-        value: "10000"
-
-  # Frontend Static Site
-  - type: web
-    name: brick-breaker-frontend
-    env: static
-    region: oregon
-    buildCommand: cd frontend && npm install && npm run build
-    staticPublishPath: frontend/dist
-    headers:
-      - path: /*
-        name: Cache-Control
-        value: public, max-age=3600
-    routes:
-      - type: rewrite
-        source: /api/*
-        destination: https://brick-breaker-api.onrender.com/api/*
+      - key: LNBITS_WEBHOOK_SECRET
+        sync: false
+      # Optional: Redis for session persistence
+      - key: REDIS_URL
+        sync: false
 
 # PostgreSQL Database
 databases:

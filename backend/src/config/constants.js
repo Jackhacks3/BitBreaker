@@ -7,7 +7,7 @@
 
 // Game configuration
 export const MAX_ATTEMPTS_PER_TOURNAMENT = 3
-export const ATTEMPT_COST_USD = parseFloat(process.env.ATTEMPT_COST_USD) || 0.01  // Default to $0.01 for testing
+export const ATTEMPT_COST_USD = parseFloat(process.env.ATTEMPT_COST_USD) || 5.00  // Default to $5.00 production price
 
 // Prize distribution (must sum to 1.0 or less)
 export const PRIZE_DISTRIBUTION = [
@@ -21,7 +21,7 @@ export const HOUSE_FEE_PERCENTAGE = 0.02  // 2%
 
 // Invoice/deposit timeouts
 export const INVOICE_TTL_SECONDS = 600  // 10 minutes
-export const WEBHOOK_IDEMPOTENCY_TTL_SECONDS = 3600  // 1 hour
+export const WEBHOOK_IDEMPOTENCY_TTL_SECONDS = 86400  // 24 hours (extended for better duplicate protection)
 
 // Session configuration
 export const SESSION_TTL_HOURS = 24
