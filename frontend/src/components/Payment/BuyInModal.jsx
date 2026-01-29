@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 
+const API_URL = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
+
 /**
  * BuyInModal Component
  *
@@ -30,7 +32,7 @@ function BuyInModal({ tournament, user, onSuccess, onClose }) {
 
     const pollInterval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/payments/status/${paymentHash}`, {
+        const res = await fetch(`${API_URL}/payments/status/${paymentHash}`, {
           headers: { 'Authorization': `Bearer ${user.token}` }
         })
         const data = await res.json()
@@ -53,7 +55,7 @@ function BuyInModal({ tournament, user, onSuccess, onClose }) {
     setError('')
 
     try {
-      const res = await fetch('/api/payments/buy-in', {
+      const res = await fetch(`${API_URL}/payments/buy-in`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

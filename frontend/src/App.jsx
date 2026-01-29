@@ -7,7 +7,7 @@ import RulesModal from './components/Rules/RulesModal'
 import PlayerGuideModal from './components/Guide/PlayerGuideModal'
 import './App.css'
 
-const API_URL = '/api'
+const API_URL = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
 
 // Fetch CSRF token for protected routes
 async function getCsrfToken() {
