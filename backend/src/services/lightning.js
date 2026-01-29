@@ -136,7 +136,7 @@ export async function payToAddress(lightningAddress, amountSats, comment = '') {
   // Mock mode for development
   if (!LNBITS_ADMIN_KEY) {
     console.warn('LNbits admin key not configured - skipping payout')
-    return { success: false, error: 'Payouts not configured' }
+    return { success: false, error: 'Payouts not configured', code: 'PAYOUTS_NOT_CONFIGURED' }
   }
 
   try {
@@ -144,7 +144,7 @@ export async function payToAddress(lightningAddress, amountSats, comment = '') {
     const invoice = await fetchLNURLInvoice(lightningAddress, amountSats, comment)
 
     if (!invoice) {
-      return { success: false, error: 'Could not get invoice from Lightning address' }
+      return { success: false, error: 'Could not get invoice from Lightning address', code: 'INVALID_ADDRESS' }
     }
 
     // Pay the invoice
@@ -176,7 +176,7 @@ export async function payToAddress(lightningAddress, amountSats, comment = '') {
     }
   } catch (error) {
     console.error('[Lightning] Pay to address error:', { address: lightningAddress, error: error.message })
-    return { success: false, error: error.message }
+    return { success: false, error: error.message, code: 'PAYMENT_FAILED' }
   }
 }
 

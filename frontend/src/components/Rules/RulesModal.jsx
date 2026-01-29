@@ -110,6 +110,40 @@ function RulesModal({ onClose }) {
           </p>
         </Section>
 
+        {/* Tech Stack & Security */}
+        <Section title="Tech Stack & Security">
+          <div style={{
+            background: 'linear-gradient(135deg, rgba(0, 217, 255, 0.1), rgba(138, 43, 226, 0.1))',
+            borderRadius: '10px',
+            padding: '1rem',
+            marginBottom: '1rem',
+            border: '1px solid rgba(0, 217, 255, 0.2)'
+          }}>
+            <div style={{ color: '#00d9ff', fontWeight: '600', marginBottom: '0.75rem', fontSize: '0.95rem' }}>
+              🔒 Your funds are protected by industry-standard security
+            </div>
+          </div>
+          <ul style={{ color: '#ccc', fontSize: '0.9rem', paddingLeft: '1.25rem', lineHeight: '1.8' }}>
+            <li><strong style={{ color: '#ffd700' }}>Lightning Network (LNbits)</strong> — Instant, non-custodial Bitcoin payments. We never hold your private keys.</li>
+            <li><strong style={{ color: '#ffd700' }}>PostgreSQL Database</strong> — Enterprise-grade relational database with encrypted connections (SSL/TLS).</li>
+            <li><strong style={{ color: '#ffd700' }}>Express.js Security</strong> — Helmet headers, rate limiting, and CSRF protection on all transactions.</li>
+            <li><strong style={{ color: '#ffd700' }}>Anti-Cheat Validation</strong> — Server-side score verification with input logging prevents manipulation.</li>
+            <li><strong style={{ color: '#ffd700' }}>Transparent Payouts</strong> — Prizes distributed automatically via Lightning with verifiable transactions.</li>
+          </ul>
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.05)',
+            borderRadius: '5px',
+            padding: '0.75rem',
+            marginTop: '1rem',
+            textAlign: 'center'
+          }}>
+            <p style={{ color: '#888', fontSize: '0.8rem', margin: 0 }}>
+              Built with React + Vite frontend, Node.js backend, and Bitcoin Lightning infrastructure.<br />
+              <span style={{ color: '#00d9ff' }}>No personal banking info required — play with Bitcoin only.</span>
+            </p>
+          </div>
+        </Section>
+
         {/* Close Button */}
         <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
           <button

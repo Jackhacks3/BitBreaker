@@ -125,6 +125,7 @@ router.post('/start-attempt', requireAuth, async (req, res, next) => {
     if (attemptsUsed >= GAME_CONFIG.maxAttemptsPerDay) {
       return res.status(400).json({
         error: 'Maximum attempts reached for today',
+        code: 'MAX_ATTEMPTS',
         attemptsUsed,
         maxAttempts: GAME_CONFIG.maxAttemptsPerDay
       })
@@ -141,6 +142,7 @@ router.post('/start-attempt', requireAuth, async (req, res, next) => {
       const { usd: balanceUsd } = await satsToUsd(balanceSats)
       return res.status(400).json({
         error: 'Insufficient balance',
+        code: 'INSUFFICIENT_BALANCE',
         required: costSats,
         requiredUsd: costUsd,
         balance: balanceSats,
@@ -148,8 +150,8 @@ router.post('/start-attempt', requireAuth, async (req, res, next) => {
       })
     }
 
-    // Deduct from wallet
-    await db.wallets.debit(req.userId, costSats, 'game_attempt', `Game attempt ${attemptsUsed + 1}`)
+    // Deduct from wallet (using 'buy_in' type which is allowed by DB constraint)
+    await db.wallets.debit(req.userId, costSats, 'buy_in', `Game attempt ${attemptsUsed + 1}`)
 
     // Increment attempt counter
     const updatedEntry = await db.entries.incrementAttempt(entry.id)
@@ -251,14 +253,14 @@ router.post('/submit', requireAuth, async (req, res, next) => {
     const tournament = await db.tournaments.findCurrent()
 
     if (!tournament || tournament.status !== 'open') {
-      return res.status(400).json({ error: 'No active tournament' })
+      return res.status(400).json({ error: 'No active tournament', code: 'NO_TOURNAMENT' })
     }
 
     // Check user has entry
     const entry = await db.entries.findByUserAndTournament(req.userId, tournament.id)
 
     if (!entry) {
-      return res.status(403).json({ error: 'No tournament entry found' })
+      return res.status(403).json({ error: 'No tournament entry found', code: 'NO_ENTRY' })
     }
 
     // Validate attemptId if provided (new flow)
@@ -266,11 +268,11 @@ router.post('/submit', requireAuth, async (req, res, next) => {
     if (attemptId) {
       const activeAttempt = await cache.get(`${ATTEMPT_PREFIX}${attemptId}`)
       if (!activeAttempt) {
-        return res.status(400).json({ error: 'Invalid or expired attempt ID' })
+        return res.status(400).json({ error: 'Invalid or expired attempt ID', code: 'INVALID_ATTEMPT' })
       }
       if (activeAttempt.userId !== req.userId) {
         console.warn(`[SECURITY] User ${req.userId.substring(0, 8)}... tried to submit someone else's attempt`)
-        return res.status(403).json({ error: 'Attempt does not belong to this user' })
+        return res.status(403).json({ error: 'Attempt does not belong to this user', code: 'UNAUTHORIZED_ATTEMPT' })
       }
       attemptNumber = activeAttempt.attemptNumber
       // Remove from active attempts (TTL handles cleanup, but remove early for security)

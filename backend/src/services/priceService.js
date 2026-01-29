@@ -19,6 +19,10 @@ const COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin
 // Update this periodically or set BTC_FALLBACK_PRICE env var
 const FALLBACK_BTC_USD = parseInt(process.env.BTC_FALLBACK_PRICE) || 100000;
 
+// Price bounds validation - reject prices outside reasonable range
+const MIN_BTC_PRICE = 10000;    // $10,000 minimum (safety floor)
+const MAX_BTC_PRICE = 500000;   // $500,000 maximum (safety ceiling)
+
 // Track fallback usage for alerting
 let fallbackUsageCount = 0;
 const MAX_FALLBACK_WARNINGS = 5;
@@ -52,6 +56,12 @@ export async function getBtcRate() {
 
     if (!btcUsd || btcUsd <= 0) {
       throw new Error('Invalid price data from CoinGecko');
+    }
+
+    // Price bounds validation - reject unreasonable prices
+    if (btcUsd < MIN_BTC_PRICE || btcUsd > MAX_BTC_PRICE) {
+      console.error(`[PRICE] BTC price out of bounds: $${btcUsd} (valid range: $${MIN_BTC_PRICE}-$${MAX_BTC_PRICE})`);
+      throw new Error(`BTC price out of bounds: $${btcUsd}`);
     }
 
     // Calculate sats per USD: 100,000,000 sats / BTC price

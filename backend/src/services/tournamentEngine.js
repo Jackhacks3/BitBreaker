@@ -20,6 +20,10 @@ const PRIZE_DISTRIBUTION = [
 
 const HOUSE_FEE_PERCENTAGE = 0.02 // 2%
 
+// Payout failure alerting thresholds
+const PAYOUT_FAILURE_ALERT_THRESHOLD = 3
+const MAX_PAYOUT_RETRIES = 5
+
 export class TournamentEngine {
   constructor() {
     this.isProcessing = false
@@ -234,19 +238,43 @@ export class TournamentEngine {
   }
 
   /**
-   * Retry failed payouts
+   * Retry failed payouts with alerting for persistent failures
+   * @returns {Promise<{processed: number, succeeded: number, failed: number}>}
    */
   async retryFailedPayouts() {
     const pending = await db.payouts.getPending()
+    const results = { processed: 0, succeeded: 0, failed: 0, failedPayoutIds: [] }
 
     for (const payout of pending) {
       // Only retry payouts older than 5 minutes
       const age = Date.now() - new Date(payout.created_at).getTime()
       if (age > 5 * 60 * 1000) {
-        console.log(`Retrying payout ${payout.id}...`)
-        await this.processPayout(payout)
+        console.log(`[PAYOUT-RETRY] Retrying payout ${payout.id}...`)
+        results.processed++
+
+        const success = await this.processPayout(payout)
+
+        if (success) {
+          results.succeeded++
+        } else {
+          results.failed++
+          results.failedPayoutIds.push(payout.id)
+        }
       }
     }
+
+    // Alert if multiple failures detected
+    if (results.failed >= PAYOUT_FAILURE_ALERT_THRESHOLD) {
+      console.error('[PAYOUT-ALERT] Multiple payout failures detected!', {
+        failedCount: results.failed,
+        failedPayoutIds: results.failedPayoutIds,
+        totalPending: pending.length,
+        timestamp: new Date().toISOString()
+      })
+      // Could integrate with external alerting (email, Slack, PagerDuty, etc.)
+    }
+
+    return results
   }
 
   /**
