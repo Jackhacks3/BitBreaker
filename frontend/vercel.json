@@ -6,10 +6,6 @@
     {
       "source": "/api/:path*",
       "destination": "https://bitbreaker.onrender.com/api/:path*"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
     }
   ],
   "headers": [
