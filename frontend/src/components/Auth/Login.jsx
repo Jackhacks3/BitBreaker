@@ -10,7 +10,7 @@ import React, { useState } from 'react'
  * 4. Returns session token on success
  */
 
-const API_BASE = '/api'
+const API_BASE = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
 
 function Login({ onLogin }) {
   const [mode, setMode] = useState('login') // login | register
