@@ -6,7 +6,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://brick-breaker-api.onrender.com/api/:path*"
+      "destination": "https://bitbreaker.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
