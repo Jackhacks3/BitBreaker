@@ -5,9 +5,8 @@ import Leaderboard from './components/Tournament/Leaderboard'
 import WalletModal from './components/Wallet/WalletModal'
 import RulesModal from './components/Rules/RulesModal'
 import PlayerGuideModal from './components/Guide/PlayerGuideModal'
+import { API_BASE as API_URL } from './utils/api'
 import './App.css'
-
-const API_URL = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
 
 // Fetch CSRF token for protected routes
 async function getCsrfToken() {

@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { API_BASE } from '../../utils/api'
 
 /**
  * Login Component - Username/Password Auth
@@ -9,8 +10,6 @@ import React, { useState } from 'react'
  * 3. On login: validates credentials
  * 4. Returns session token on success
  */
-
-const API_BASE = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
 
 function Login({ onLogin }) {
   const [mode, setMode] = useState('login') // login | register

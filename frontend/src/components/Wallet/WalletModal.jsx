@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
+import { API_BASE } from '../../utils/api'
 
 // Maximum poll attempts (60 * 3 seconds = 3 minutes max)
 const MAX_POLL_ATTEMPTS = 60
@@ -117,7 +116,6 @@ function WalletModal({ user, onClose, onUpdate }) {
 
     setError('')
     setGeneratingInvoice(true)
-    setQrLoaded(false)
 
     try {
       // Convert USD to sats

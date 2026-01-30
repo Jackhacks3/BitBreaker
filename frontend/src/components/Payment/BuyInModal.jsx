@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
-
-const API_URL = import.meta.env.VITE_API_URL || 'https://bitbreaker.onrender.com/api'
+import { API_BASE as API_URL } from '../../utils/api'
 
 /**
  * BuyInModal Component
