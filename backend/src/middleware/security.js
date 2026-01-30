@@ -233,19 +233,19 @@ export function secureErrorHandler(err, req, res, next) {
  */
 export function requireJson(req, res, next) {
   const safeMethods = ['GET', 'HEAD', 'OPTIONS', 'DELETE']
-
   if (safeMethods.includes(req.method)) {
     return next()
   }
-
+  // Webhooks (e.g. LNbits) may send different Content-Type; they are verified by signature
+  if (req.path.includes('/webhook')) {
+    return next()
+  }
   const contentType = req.headers['content-type']
-
   if (!contentType || !contentType.includes('application/json')) {
     return res.status(415).json({
       error: 'Content-Type must be application/json'
     })
   }
-
   next()
 }
 

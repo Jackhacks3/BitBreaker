@@ -164,10 +164,15 @@ export async function getSession(token) {
 export async function destroySession(token) {
   if (!token) return
 
-  if (useMemoryStore) {
-    memoryStore.delete(token)
-  } else {
-    await redis.del(`${SESSION_PREFIX}${token}`)
+  try {
+    if (useMemoryStore) {
+      memoryStore.delete(token)
+    } else {
+      await redis.del(`${SESSION_PREFIX}${token}`)
+    }
+  } catch (error) {
+    console.error('[Session] Error destroying session:', error.message)
+    // Don't throw - logout should succeed even if Redis fails
   }
 }
 
@@ -177,41 +182,46 @@ export async function destroySession(token) {
  * @param {string} userId - User ID to invalidate all sessions for
  */
 export async function destroyAllUserSessions(userId) {
-  if (useMemoryStore) {
-    for (const [token, session] of memoryStore.entries()) {
-      if (session.userId === userId) {
-        memoryStore.delete(token)
-      }
-    }
-    return
-  }
-
-  // Redis: scan for matching sessions
-  let cursor = '0'
-  do {
-    const [newCursor, keys] = await redis.scan(
-      cursor,
-      'MATCH',
-      `${SESSION_PREFIX}*`,
-      'COUNT',
-      100
-    )
-    cursor = newCursor
-
-    for (const key of keys) {
-      const data = await redis.get(key)
-      if (data) {
-        try {
-          const session = JSON.parse(data)
-          if (session.userId === userId) {
-            await redis.del(key)
-          }
-        } catch (e) {
-          // Skip invalid sessions
+  try {
+    if (useMemoryStore) {
+      for (const [token, session] of memoryStore.entries()) {
+        if (session.userId === userId) {
+          memoryStore.delete(token)
         }
       }
+      return
     }
-  } while (cursor !== '0')
+
+    // Redis: scan for matching sessions
+    let cursor = '0'
+    do {
+      const [newCursor, keys] = await redis.scan(
+        cursor,
+        'MATCH',
+        `${SESSION_PREFIX}*`,
+        'COUNT',
+        100
+      )
+      cursor = newCursor
+
+      for (const key of keys) {
+        const data = await redis.get(key)
+        if (data) {
+          try {
+            const session = JSON.parse(data)
+            if (session.userId === userId) {
+              await redis.del(key)
+            }
+          } catch (e) {
+            // Skip invalid sessions
+          }
+        }
+      }
+    } while (cursor !== '0')
+  } catch (error) {
+    console.error('[Session] Error destroying all user sessions:', error.message)
+    // Don't throw - logout-all should succeed even if Redis fails
+  }
 }
 
 /**

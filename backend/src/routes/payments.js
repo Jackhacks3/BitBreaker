@@ -5,8 +5,12 @@ import { requireAuth } from './auth.js'
 import { createInvoice, checkPayment, payToAddress } from '../services/lightning.js'
 import * as cache from '../services/cacheStore.js'
 import { WEBHOOK_IDEMPOTENCY_TTL_SECONDS, INVOICE_TTL_SECONDS } from '../config/constants.js'
+import { normalizePaymentHash } from '../utils/paymentHash.js'
 
 const router = Router()
+
+// Deposit invoices use this prefix in cache (must match wallet.js)
+const DEPOSIT_PREFIX = 'deposit:'
 
 /**
  * Payment Routes
@@ -140,8 +144,9 @@ router.post('/buy-in', requireAuth, async (req, res, next) => {
     // Create Lightning invoice
     const memo = `Brick Breaker Tournament - ${tournament.date}`
     const invoice = await createInvoice(parseInt(tournament.buy_in_sats), memo)
+    const paymentHash = normalizePaymentHash(invoice.paymentHash) || invoice.paymentHash
 
-    // Store pending invoice with TTL
+    // Store pending invoice with TTL (normalized hash for webhook lookup)
     const invoiceData = {
       tournamentId: tournament.id,
       userId: req.userId,
@@ -150,14 +155,14 @@ router.post('/buy-in', requireAuth, async (req, res, next) => {
       createdAt: Date.now()
     }
 
-    await cache.set(`${INVOICE_PREFIX}${invoice.paymentHash}`, invoiceData, INVOICE_TTL)
-    await cache.set(userInvoiceKey, invoice.paymentHash, INVOICE_TTL)
+    await cache.set(`${INVOICE_PREFIX}${paymentHash}`, invoiceData, INVOICE_TTL)
+    await cache.set(userInvoiceKey, paymentHash, INVOICE_TTL)
 
-    console.log(`[PAYMENT] Invoice created for user ${req.userId.substring(0, 8)}...: ${invoice.paymentHash.substring(0, 16)}...`)
+    console.log(`[PAYMENT] Invoice created for user ${req.userId.substring(0, 8)}...: ${paymentHash.substring(0, 16)}...`)
 
     res.json({
       invoice: invoice.paymentRequest,
-      paymentHash: invoice.paymentHash,
+      paymentHash,
       amount: parseInt(tournament.buy_in_sats),
       expiresIn: 600 // 10 minutes
     })
@@ -172,10 +177,8 @@ router.post('/buy-in', requireAuth, async (req, res, next) => {
  */
 router.get('/status/:hash', requireAuth, async (req, res, next) => {
   try {
-    const { hash } = req.params
-
-    // Validate hash format (64 hex characters)
-    if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) {
+    const hash = normalizePaymentHash(req.params.hash)
+    if (!hash) {
       return res.status(400).json({ error: 'Invalid payment hash format', code: 'INVALID_HASH' })
     }
 
@@ -206,7 +209,7 @@ router.get('/status/:hash', requireAuth, async (req, res, next) => {
       return res.json({ paid: false, expired: true, code: 'INVOICE_EXPIRED' })
     }
 
-    // Check if payment received via LNbits API
+    // Check if payment received via LNbits API (pass through raw for API call)
     const paid = await checkPayment(hash)
 
     if (paid) {
@@ -242,10 +245,16 @@ router.post('/webhook', async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid signature', code: 'INVALID_SIGNATURE' })
     }
 
-    const { payment_hash, paid } = req.body
+    const { payment_hash: rawHash, paid } = req.body
 
     // Must have payment_hash and paid=true
-    if (!payment_hash || !paid) {
+    if (!rawHash || !paid) {
+      return res.json({ received: true })
+    }
+
+    const payment_hash = normalizePaymentHash(rawHash)
+    if (!payment_hash) {
+      console.warn('[PAYMENT] Webhook with invalid payment_hash format')
       return res.json({ received: true })
     }
 
@@ -254,20 +263,44 @@ router.post('/webhook', async (req, res, next) => {
     const isNew = await cache.setIfNotExists(idempotencyKey, WEBHOOK_TTL)
 
     if (!isNew) {
-      console.log(`[PAYMENT] Duplicate webhook ignored: ${payment_hash.substring(0, 16)}...`)
-      return res.json({ received: true, duplicate: true })
+      // Webhook seen before - check if it was fully processed or crashed midway
+      const invoiceStillExists = await cache.get(`${INVOICE_PREFIX}${payment_hash}`)
+      const depositStillExists = await cache.get(`${DEPOSIT_PREFIX}${payment_hash}`)
+      
+      if (!invoiceStillExists && !depositStillExists) {
+        // Payment fully processed (cache entries deleted) - safe to ignore
+        console.log(`[PAYMENT] Duplicate webhook ignored (already processed): ${payment_hash.substring(0, 16)}...`)
+        return res.json({ received: true, duplicate: true })
+      }
+      
+      // Cache entries still exist - previous webhook crashed before processing
+      // Allow retry to complete the payment
+      console.log(`[PAYMENT] Retrying crashed webhook: ${payment_hash.substring(0, 16)}...`)
     }
 
-    const pendingInfo = await cache.get(`${INVOICE_PREFIX}${payment_hash}`)
+    let pendingInfo = await cache.get(`${INVOICE_PREFIX}${payment_hash}`)
 
+    // If not a buy-in invoice, check for deposit invoice
     if (!pendingInfo) {
+      const depositInfo = await cache.get(`${DEPOSIT_PREFIX}${payment_hash}`)
+      if (depositInfo) {
+        // Atomic claim: if we delete it, we're responsible for processing
+        const deleted = await cache.del(`${DEPOSIT_PREFIX}${payment_hash}`)
+        if (!deleted) {
+          // Another handler (webhook or poll) already processed this
+          console.log(`[PAYMENT] Deposit already processed by another handler: ${payment_hash.substring(0, 16)}...`)
+          return res.json({ received: true, alreadyProcessed: true })
+        }
+        await cache.del(`${DEPOSIT_PREFIX}user:${depositInfo.userId}`)
+        await db.wallets.credit(depositInfo.userId, depositInfo.amount, 'deposit', 'Lightning deposit', payment_hash)
+        console.log(`[PAYMENT] Deposit credited via webhook: ${depositInfo.amount} sats to user ${depositInfo.userId.substring(0, 8)}...`)
+        return res.json({ received: true, processed: true, type: 'deposit' })
+      }
       console.log(`[PAYMENT] Webhook for unknown invoice: ${payment_hash.substring(0, 16)}...`)
       return res.json({ received: true, unknown: true })
     }
 
-    // Idempotency key already set above (atomic operation prevents race conditions)
-
-    // Process the payment
+    // Process the buy-in payment
     const result = await processPayment(payment_hash, pendingInfo)
 
     console.log(`[PAYMENT] Webhook processed: ${payment_hash.substring(0, 16)}... - success: ${result.success}`)
@@ -280,50 +313,55 @@ router.post('/webhook', async (req, res, next) => {
 
 /**
  * Process a confirmed payment
- * Creates tournament entry and updates prize pool
+ * Creates tournament entry and updates prize pool (in a single transaction when DB supports it)
  *
- * @param {string} paymentHash - Payment hash
+ * @param {string} paymentHash - Normalized payment hash
  * @param {Object} pendingInfo - Pending invoice info
  * @returns {Promise<{success: boolean, entryId?: string}>}
  */
 async function processPayment(paymentHash, pendingInfo) {
   try {
-    // Check if entry already exists (idempotency)
-    const existingEntry = await db.entries.findByUserAndTournament(
-      pendingInfo.userId,
-      pendingInfo.tournamentId
-    )
-
-    if (existingEntry) {
-      console.log(`[PAYMENT] Entry already exists for user ${pendingInfo.userId.substring(0, 8)}...`)
-      await cache.del(`${INVOICE_PREFIX}${paymentHash}`)
-      return { success: true, entryId: existingEntry.id }
+    const runInTransaction = async (client) => {
+      const existingEntry = await db.entries.findByUserAndTournament(
+        pendingInfo.userId,
+        pendingInfo.tournamentId,
+        client
+      )
+      if (existingEntry) {
+        return { existing: true, entryId: existingEntry.id }
+      }
+      const entry = await db.entries.create(
+        pendingInfo.tournamentId,
+        pendingInfo.userId,
+        paymentHash,
+        client
+      )
+      if (!entry) {
+        return { success: false }
+      }
+      await db.tournaments.updatePrizePool(
+        pendingInfo.tournamentId,
+        pendingInfo.amount,
+        client
+      )
+      return { success: true, entryId: entry.id }
     }
 
-    // Create tournament entry
-    const entry = await db.entries.create(
-      pendingInfo.tournamentId,
-      pendingInfo.userId,
-      paymentHash
-    )
+    const result = await db.withTransaction(runInTransaction)
 
-    if (!entry) {
+    if (result.existing) {
+      console.log(`[PAYMENT] Entry already exists for user ${pendingInfo.userId.substring(0, 8)}...`)
+      await cache.del(`${INVOICE_PREFIX}${paymentHash}`)
+      return { success: true, entryId: result.entryId }
+    }
+    if (!result.success) {
       console.error(`[PAYMENT] Failed to create entry for payment ${paymentHash.substring(0, 16)}...`)
       return { success: false }
     }
 
-    // Update prize pool
-    await db.tournaments.updatePrizePool(
-      pendingInfo.tournamentId,
-      pendingInfo.amount
-    )
-
-    // Remove from pending (cache TTL will also handle this, but clean up early)
     await cache.del(`${INVOICE_PREFIX}${paymentHash}`)
-
-    console.log(`[PAYMENT] Entry created: ${entry.id} for user ${pendingInfo.userId.substring(0, 8)}...`)
-
-    return { success: true, entryId: entry.id }
+    console.log(`[PAYMENT] Entry created: ${result.entryId} for user ${pendingInfo.userId.substring(0, 8)}...`)
+    return { success: true, entryId: result.entryId }
   } catch (error) {
     console.error('[PAYMENT] Process payment error:', error)
     return { success: false }

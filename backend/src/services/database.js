@@ -349,6 +349,41 @@ export async function queryMany(text, params) {
   }
 }
 
+/**
+ * Run queries on a single client (for transactions)
+ */
+export async function queryWithClient(client, text, params) {
+  const result = await client.query(text, params)
+  return result
+}
+
+export async function queryOneWithClient(client, text, params) {
+  const result = await client.query(text, params)
+  return result.rows[0] || null
+}
+
+/**
+ * Run a callback inside a database transaction (PostgreSQL only).
+ * In mock mode, runs callback with null client (no real transaction).
+ */
+export async function withTransaction(callback) {
+  if (useMockDb) {
+    return callback(null)
+  }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await callback(client)
+    await client.query('COMMIT')
+    return result
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 // ============= USER FUNCTIONS =============
 export const users = {
   async create(displayName, lightningAddress) {
@@ -504,7 +539,7 @@ export const tournaments = {
     return this.findByDate(todayUTC)
   },
 
-  async updatePrizePool(id, amount) {
+  async updatePrizePool(id, amount, client = null) {
     if (useMockDb) {
       const t = mockData.tournaments.get(id)
       if (t) {
@@ -512,6 +547,12 @@ export const tournaments = {
         return t
       }
       return null
+    }
+    if (client) {
+      return queryOneWithClient(client,
+        `UPDATE tournaments SET prize_pool_sats = prize_pool_sats + $2 WHERE id = $1 RETURNING *`,
+        [id, amount]
+      )
     }
     return queryOne(
       `UPDATE tournaments SET prize_pool_sats = prize_pool_sats + $2 WHERE id = $1 RETURNING *`,
@@ -534,7 +575,7 @@ export const tournaments = {
 
 // ============= ENTRY FUNCTIONS =============
 export const entries = {
-  async create(tournamentId, userId, paymentHash) {
+  async create(tournamentId, userId, paymentHash, client = null) {
     if (useMockDb) {
       // Check if exists
       for (const e of mockData.entries.values()) {
@@ -553,6 +594,15 @@ export const entries = {
       mockData.entries.set(entry.id, entry)
       return entry
     }
+    if (client) {
+      return queryOneWithClient(client,
+        `INSERT INTO tournament_entries (tournament_id, user_id, payment_hash, paid_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (tournament_id, user_id) DO NOTHING
+         RETURNING *`,
+        [tournamentId, userId, paymentHash]
+      )
+    }
     return queryOne(
       `INSERT INTO tournament_entries (tournament_id, user_id, payment_hash, paid_at)
        VALUES ($1, $2, $3, NOW())
@@ -562,12 +612,18 @@ export const entries = {
     )
   },
 
-  async findByUserAndTournament(userId, tournamentId) {
+  async findByUserAndTournament(userId, tournamentId, client = null) {
     if (useMockDb) {
       for (const e of mockData.entries.values()) {
         if (e.user_id === userId && e.tournament_id === tournamentId) return e
       }
       return null
+    }
+    if (client) {
+      return queryOneWithClient(client,
+        `SELECT * FROM tournament_entries WHERE user_id = $1 AND tournament_id = $2`,
+        [userId, tournamentId]
+      )
     }
     return queryOne(
       `SELECT * FROM tournament_entries WHERE user_id = $1 AND tournament_id = $2`,
@@ -1021,7 +1077,7 @@ export const wallets = {
     )
   },
 
-  async debit(userId, amountSats, type, description, reference = null) {
+  async debit(userId, amountSats, type, description, reference = null, client = null) {
     if (useMockDb) {
       const wallet = mockData.wallets.get(userId)
       if (!wallet || wallet.balance_sats < amountSats) {
@@ -1035,19 +1091,22 @@ export const wallets = {
       return wallet
     }
 
+    const runQuery = client ? (text, params) => queryOneWithClient(client, text, params) : queryOne
+    const runExec = client ? (text, params) => queryWithClient(client, text, params) : query
+
     // Check balance first
-    const wallet = await queryOne('SELECT balance_sats FROM user_wallets WHERE user_id = $1', [userId])
+    const wallet = await runQuery('SELECT balance_sats FROM user_wallets WHERE user_id = $1', [userId])
     if (!wallet || wallet.balance_sats < amountSats) {
       throw new Error('Insufficient balance')
     }
 
     // Record transaction
-    await query(
+    await runExec(
       `INSERT INTO transactions (user_id, type, amount_sats, description, reference) VALUES ($1, $2, $3, $4, $5)`,
       [userId, type, -amountSats, description, reference]
     )
 
-    return queryOne(
+    return runQuery(
       `UPDATE user_wallets SET balance_sats = balance_sats - $2, updated_at = NOW()
        WHERE user_id = $1 AND balance_sats >= $2
        RETURNING *`,
@@ -1123,4 +1182,4 @@ export async function close() {
   }
 }
 
-export default { query, queryOne, queryMany, users, tournaments, entries, sessions, payouts, whitelist, lnurlChallenges, wallets, close }
+export default { query, queryOne, queryMany, queryWithClient, queryOneWithClient, withTransaction, users, tournaments, entries, sessions, payouts, whitelist, lnurlChallenges, wallets, close }

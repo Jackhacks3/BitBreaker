@@ -4,6 +4,7 @@ import { requireAuth } from './auth.js'
 import { getBtcRate, getBuyInSats, satsToUsd, formatSats } from '../services/priceService.js'
 import { createInvoice, checkPayment } from '../services/lightning.js'
 import * as cache from '../services/cacheStore.js'
+import { normalizePaymentHash } from '../utils/paymentHash.js'
 
 const router = Router()
 
@@ -120,8 +121,9 @@ router.post('/deposit', requireAuth, async (req, res, next) => {
     const { usd } = await satsToUsd(amountSats)
     const memo = `BITBRICK Deposit - ${formatSats(amountSats)} (~$${usd.toFixed(2)})`
     const invoice = await createInvoice(amountSats, memo)
+    const paymentHash = normalizePaymentHash(invoice.paymentHash) || invoice.paymentHash
 
-    // Store pending deposit with TTL
+    // Store pending deposit with TTL (normalized hash for webhook lookup)
     const depositData = {
       userId: req.userId,
       amount: amountSats,
@@ -129,14 +131,14 @@ router.post('/deposit', requireAuth, async (req, res, next) => {
       createdAt: Date.now()
     }
 
-    await cache.set(`${DEPOSIT_PREFIX}${invoice.paymentHash}`, depositData, DEPOSIT_TTL)
-    await cache.set(userDepositKey, invoice.paymentHash, DEPOSIT_TTL)
+    await cache.set(`${DEPOSIT_PREFIX}${paymentHash}`, depositData, DEPOSIT_TTL)
+    await cache.set(userDepositKey, paymentHash, DEPOSIT_TTL)
 
-    console.log(`[WALLET] Deposit invoice created: ${invoice.paymentHash.substring(0, 16)}... for ${amountSats} sats`)
+    console.log(`[WALLET] Deposit invoice created: ${paymentHash.substring(0, 16)}... for ${amountSats} sats`)
 
     res.json({
       invoice: invoice.paymentRequest,
-      paymentHash: invoice.paymentHash,
+      paymentHash,
       amount: amountSats,
       expiresIn: 600
     })
@@ -151,9 +153,8 @@ router.post('/deposit', requireAuth, async (req, res, next) => {
  */
 router.get('/deposit/status/:hash', requireAuth, async (req, res, next) => {
   try {
-    const { hash } = req.params
-
-    if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) {
+    const hash = normalizePaymentHash(req.params.hash)
+    if (!hash) {
       return res.status(400).json({ error: 'Invalid payment hash' })
     }
 
@@ -209,67 +210,64 @@ router.get('/deposit/status/:hash', requireAuth, async (req, res, next) => {
 
 /**
  * POST /api/wallet/buy-in
- * Deduct $5 from wallet to enter tournament
+ * Deduct from wallet to enter tournament (debit + entry + prize pool in one transaction to prevent race)
  */
 router.post('/buy-in', requireAuth, async (req, res, next) => {
   try {
-    // Get current tournament
     const tournament = await db.tournaments.findCurrent()
-
     if (!tournament || tournament.status !== 'open') {
       return res.status(400).json({ error: 'No active tournament' })
     }
 
-    // Check if already entered
-    const existingEntry = await db.entries.findByUserAndTournament(req.userId, tournament.id)
-
-    if (existingEntry) {
-      return res.status(400).json({ error: 'Already entered this tournament' })
-    }
-
-    // Get buy-in amount in sats
     const { sats: buyInSats, usd: buyInUsd, rate } = await getBuyInSats()
 
-    // Check wallet balance
-    const wallet = await db.wallets.getByUserId(req.userId)
-    const balance = wallet?.balance_sats || 0
+    const result = await db.withTransaction(async (client) => {
+      const existingEntry = await db.entries.findByUserAndTournament(req.userId, tournament.id, client)
+      if (existingEntry) {
+        const err = new Error('Already entered this tournament')
+        err.code = 'ALREADY_ENTERED'
+        throw err
+      }
+      await db.wallets.debit(req.userId, buyInSats, 'buy_in', `Tournament buy-in ${tournament.date}`, client)
+      const entry = await db.entries.create(tournament.id, req.userId, 'wallet_buy_in', client)
+      if (!entry) {
+        const err = new Error('Failed to create entry (duplicate)')
+        err.code = 'DUPLICATE_ENTRY'
+        throw err
+      }
+      await db.tournaments.updatePrizePool(tournament.id, buyInSats, client)
+      return { entry, buyInSats, buyInUsd, rate }
+    })
 
-    if (balance < buyInSats) {
+    console.log(`[WALLET] Buy-in completed: ${result.buyInSats} sats from user ${req.userId.substring(0, 8)}...`)
+
+    res.json({
+      success: true,
+      entryId: result.entry.id,
+      deducted: result.buyInSats,
+      deductedUsd: result.buyInUsd,
+      exchangeRate: result.rate
+    })
+  } catch (error) {
+    if (error.code === 'ALREADY_ENTERED') {
+      return res.status(400).json({ error: 'Already entered this tournament' })
+    }
+    if (error.code === 'DUPLICATE_ENTRY') {
+      return res.status(400).json({ error: 'Already entered this tournament' })
+    }
+    if (error.message === 'Insufficient balance') {
+      const wallet = await db.wallets.getByUserId(req.userId)
+      const balance = wallet?.balance_sats || 0
+      const { sats: buyInSats, usd: buyInUsd } = await getBuyInSats()
       const { usd: balanceUsd } = await satsToUsd(balance)
       return res.status(400).json({
         error: 'Insufficient balance',
         required: buyInSats,
         requiredUsd: buyInUsd,
-        balance: balance,
+        balance,
         balanceUsd: balanceUsd
       })
     }
-
-    // Deduct from wallet
-    await db.wallets.debit(req.userId, buyInSats, 'buy_in', `Tournament buy-in ${tournament.date}`)
-
-    // Create tournament entry
-    const entry = await db.entries.create(tournament.id, req.userId, 'wallet_buy_in')
-
-    if (!entry) {
-      // Refund if entry creation failed
-      await db.wallets.credit(req.userId, buyInSats, 'buy_in', 'Buy-in refund - entry creation failed')
-      return res.status(500).json({ error: 'Failed to create entry' })
-    }
-
-    // Update prize pool
-    await db.tournaments.updatePrizePool(tournament.id, buyInSats)
-
-    console.log(`[WALLET] Buy-in completed: ${buyInSats} sats from user ${req.userId.substring(0, 8)}...`)
-
-    res.json({
-      success: true,
-      entryId: entry.id,
-      deducted: buyInSats,
-      deductedUsd: buyInUsd,
-      exchangeRate: rate
-    })
-  } catch (error) {
     next(error)
   }
 })
