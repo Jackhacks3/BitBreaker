@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import GameCanvas from './components/Game/GameCanvas'
 import Login from './components/Auth/Login'
 import Leaderboard from './components/Tournament/Leaderboard'
@@ -48,6 +48,10 @@ function App() {
   const [showConfirm, setShowConfirm] = useState(false)
   const [startingAttempt, setStartingAttempt] = useState(false)
 
+  // Store interval reference so it can be cleared on logout
+  const pollingIntervalRef = useRef(null)
+  const isRateLimitedRef = useRef(false)
+
   // Check login status on mount
   useEffect(() => {
     const savedUser = localStorage.getItem('user')
@@ -58,18 +62,31 @@ function App() {
     }
   }, [])
 
-  // Fetch tournament data
+  // Fetch tournament data with rate limit handling
   useEffect(() => {
     fetchTournament()
     fetchLeaderboard()
 
-    // Refresh every 30 seconds
-    const interval = setInterval(() => {
-      fetchTournament()
-      fetchLeaderboard()
-    }, 30000)
+    // Refresh every 30 seconds, but pause if rate limited
+    const startPolling = () => {
+      if (pollingIntervalRef.current) return // Already polling
+      
+      pollingIntervalRef.current = setInterval(() => {
+        if (!isRateLimitedRef.current) {
+          fetchTournament()
+          fetchLeaderboard()
+        }
+      }, 30000)
+    }
 
-    return () => clearInterval(interval)
+    startPolling()
+
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current)
+        pollingIntervalRef.current = null
+      }
+    }
   }, [])
 
   // Fetch attempts when logged in
@@ -82,8 +99,27 @@ function App() {
   const fetchTournament = async () => {
     try {
       const res = await fetch(`${API_URL}/tournaments/current`)
-      const data = await res.json()
-      setTournament(data)
+      
+      // Handle rate limiting - pause polling for 2 minutes
+      if (res.status === 429) {
+        isRateLimitedRef.current = true
+        console.warn('Rate limited - pausing polling for 2 minutes')
+        
+        // Resume after 2 minutes
+        setTimeout(() => {
+          isRateLimitedRef.current = false
+          console.log('Resuming polling after rate limit backoff')
+        }, 120000) // 2 minutes
+        
+        return
+      }
+
+      // Reset rate limit flag on successful request
+      if (res.ok) {
+        isRateLimitedRef.current = false
+        const data = await res.json()
+        setTournament(data)
+      }
     } catch (err) {
       console.error('Failed to fetch tournament:', err)
     }
@@ -92,8 +128,27 @@ function App() {
   const fetchLeaderboard = async () => {
     try {
       const res = await fetch(`${API_URL}/tournaments/current/leaderboard`)
-      const data = await res.json()
-      setLeaderboard(data)
+      
+      // Handle rate limiting - pause polling for 2 minutes
+      if (res.status === 429) {
+        isRateLimitedRef.current = true
+        console.warn('Rate limited - pausing polling for 2 minutes')
+        
+        // Resume after 2 minutes
+        setTimeout(() => {
+          isRateLimitedRef.current = false
+          console.log('Resuming polling after rate limit backoff')
+        }, 120000) // 2 minutes
+        
+        return
+      }
+
+      // Reset rate limit flag on successful request
+      if (res.ok) {
+        isRateLimitedRef.current = false
+        const data = await res.json()
+        setLeaderboard(data)
+      }
     } catch (err) {
       console.error('Failed to fetch leaderboard:', err)
     }
@@ -146,6 +201,9 @@ function App() {
     setAttempts({ used: 0, remaining: 3, max: 3 })
     setCanPlay(false)
     localStorage.removeItem('user')
+    
+    // Reset rate limit state on logout
+    isRateLimitedRef.current = false
   }
 
   const handleWalletUpdate = () => {
