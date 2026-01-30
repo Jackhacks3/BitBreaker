@@ -272,7 +272,8 @@ async function start() {
     // Check Redis for production
     if (!isUsingRedis()) {
       if (isProduction) {
-        securityErrors.push('REDIS_URL is required in production for session/cache persistence')
+        // Allow in-memory stores in production with warning (sessions lost on restart)
+        console.warn('  [WARN] REDIS_URL not set - using in-memory stores (sessions will be lost on restart)')
       } else {
         console.log('  [OK] Using in-memory stores (development only)')
       }
