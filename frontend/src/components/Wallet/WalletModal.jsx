@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { API_BASE } from '../../utils/api'
 
-// Maximum poll attempts (60 * 3 seconds = 3 minutes max)
-const MAX_POLL_ATTEMPTS = 60
+// Maximum poll attempts (12 * 15 seconds = 3 minutes max)
+const MAX_POLL_ATTEMPTS = 12
 
 /**
  * WalletModal Component
@@ -57,6 +57,20 @@ function WalletModal({ user, onClose, onUpdate }) {
         const res = await fetch(`${API_BASE}/wallet/deposit/status/${depositHash}`, {
           headers: { 'Authorization': `Bearer ${user.token}` }
         })
+
+        // Respect backend rate limiting and avoid hammering on 429s
+        if (!res.ok) {
+          if (res.status === 429) {
+            setError('Too many payment status checks. Please wait a few seconds and try again.')
+            clearInterval(pollInterval)
+            setCheckingPayment(false)
+            return
+          }
+          console.error('Payment status check failed with status:', res.status)
+          setCheckingPayment(false)
+          return
+        }
+
         const data = await res.json()
 
         if (data.paid) {
@@ -76,7 +90,7 @@ function WalletModal({ user, onClose, onUpdate }) {
         console.error('Payment check error:', err)
       }
       setCheckingPayment(false)
-    }, 3000) // Check every 3 seconds
+    }, 15000) // Check every 15 seconds to stay under backend rate limits
 
     return () => clearInterval(pollInterval)
   }, [depositHash, user?.token])
