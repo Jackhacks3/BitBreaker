@@ -26,11 +26,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis (sessions + cache) - host 6380 to avoid conflict with other Redis on 6379
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Backend API
   api:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "4000:4000"
     environment:
@@ -40,6 +56,8 @@ services:
       - BUY_IN_SATS=${BUY_IN_SATS:-100}
       # Database - use env var or local postgres
       - DATABASE_URL=${DATABASE_URL:-postgresql://brickbreaker:brickbreaker@postgres:5432/brickbreaker}
+      # Redis - session and cache store
+      - REDIS_URL=redis://redis:6379
       # LNbits Configuration - MUST be set via .env file
       - LNBITS_URL=${LNBITS_URL}
       - LNBITS_API_KEY=${LNBITS_API_KEY}

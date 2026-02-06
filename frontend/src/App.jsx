@@ -8,12 +8,16 @@ import PlayerGuideModal from './components/Guide/PlayerGuideModal'
 import { API_BASE as API_URL } from './utils/api'
 import './App.css'
 
-// Fetch CSRF token for protected routes
+// Fetch CSRF token for protected routes (must use credentials so cookie is sent/received)
 async function getCsrfToken() {
   try {
     const res = await fetch(`${API_URL}/csrf-token`, { credentials: 'include' })
     const data = await res.json()
-    return data.csrfToken
+    const token = data?.csrfToken
+    if (!token) {
+      console.warn('CSRF token empty from server')
+    }
+    return token || null
   } catch (err) {
     console.error('Failed to get CSRF token:', err)
     return null
@@ -127,7 +131,7 @@ function App() {
 
   const fetchLeaderboard = async () => {
     try {
-      const res = await fetch(`${API_URL}/tournaments/current/leaderboard`)
+      const res = await fetch(`${API_URL}/tournaments/current/leaderboard`, { credentials: 'include' })
       
       // Handle rate limiting - pause polling for 2 minutes
       if (res.status === 429) {
@@ -159,6 +163,7 @@ function App() {
 
     try {
       const res = await fetch(`${API_URL}/game/attempts`, {
+        credentials: 'include',
         headers: { 'Authorization': `Bearer ${user.token}` }
       })
 
@@ -220,13 +225,18 @@ function App() {
       // Get CSRF token first
       const csrfToken = await getCsrfToken()
 
+      if (!csrfToken) {
+        alert('Could not get security token. Please refresh the page and try again.')
+        return
+      }
+
       const res = await fetch(`${API_URL}/game/start-attempt`, {
         method: 'POST',
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${user.token}`,
-          'x-csrf-token': csrfToken || ''
+          'x-csrf-token': csrfToken
         }
       })
 

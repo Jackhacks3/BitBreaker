@@ -12,7 +12,8 @@ const bootstrapLimiter = rateLimit({
   max: 5, // 5 attempts per window
   message: { error: 'Too many bootstrap attempts, please try again later' },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  validate: { trustProxy: false } // behind Docker/nginx; trust proxy is intentional
 })
 
 /**

@@ -32,20 +32,53 @@ async function tryPostgres() {
 
   try {
     const pg = await import('pg')
-    pool = new pg.default.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-      // Configurable pool settings via environment variables
+    const connectionString = process.env.DATABASE_URL
+    // Neon: pooler often expects SSL. If server says "does not support SSL", try without (env DATABASE_SSL=0).
+    const sslDisabled = process.env.DATABASE_SSL === '0' || process.env.DATABASE_SSL === 'false'
+    const urlRequiresSsl = connectionString && connectionString.includes('sslmode=require')
+    const useSsl = !sslDisabled && (process.env.NODE_ENV === 'production' || urlRequiresSsl)
+
+    const poolConfig = {
+      connectionString,
       max: parseInt(process.env.DB_POOL_MAX) || 20,
       idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT_MS) || 30000,
       connectionTimeoutMillis: parseInt(process.env.DB_CONNECT_TIMEOUT_MS) || 2000
-    })
+    }
 
-    // Test connection
-    const client = await pool.connect()
-    await client.query('SELECT 1')
-    client.release()
-    return true
+    if (useSsl) {
+      poolConfig.ssl = { rejectUnauthorized: false }
+    }
+
+    pool = new pg.default.Pool(poolConfig)
+
+    let client
+    try {
+      client = await pool.connect()
+      await client.query('SELECT 1')
+      client.release()
+      return true
+    } catch (firstError) {
+      if (client) client.release().catch(() => {})
+      // If server says it doesn't support SSL, retry without SSL (some Neon pooler setups)
+      if (useSsl && firstError.message && firstError.message.includes('does not support SSL')) {
+        try {
+          pool.end().catch(() => {})
+          pool = new pg.default.Pool({
+            ...poolConfig,
+            ssl: false
+          })
+          const retryClient = await pool.connect()
+          await retryClient.query('SELECT 1')
+          retryClient.release()
+          console.log('PostgreSQL connected without SSL (pooler mode)')
+          return true
+        } catch (retryError) {
+          console.warn('PostgreSQL not available (retry without SSL):', retryError.message)
+          return false
+        }
+      }
+      throw firstError
+    }
   } catch (error) {
     console.warn('PostgreSQL not available:', error.message)
     return false
@@ -665,7 +698,7 @@ export const entries = {
       return results.sort((a, b) => b.best_score - a.best_score).slice(0, limit)
     }
     return queryMany(
-      `SELECT e.user_id, e.best_score, u.display_name
+      `SELECT e.user_id, e.best_score, COALESCE(u.display_name, 'Player') AS display_name
        FROM tournament_entries e
        JOIN users u ON e.user_id = u.id
        WHERE e.tournament_id = $1 AND e.best_score > 0

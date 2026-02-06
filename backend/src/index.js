@@ -4,10 +4,15 @@ import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import cookieParser from 'cookie-parser'
 import dotenv from 'dotenv'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
 import cron from 'node-cron'
 
-// Load environment variables
-dotenv.config()
+// Load environment variables: project root .env first (so Neon DATABASE_URL is used), then backend/.env overrides
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+dotenv.config({ path: join(__dirname, '../../.env') })
+dotenv.config() // backend/.env overrides when present
 
 // Import routes
 import authRoutes from './routes/auth.js'
@@ -37,6 +42,10 @@ import {
 } from './middleware/security.js'
 
 const app = express()
+
+// Must be first: trust proxy so X-Forwarded-For is used (Docker/Nginx) and rate-limit keys by real client IP
+app.set('trust proxy', true)
+
 const PORT = process.env.PORT || 4000
 const isProduction = process.env.NODE_ENV === 'production'
 
@@ -65,36 +74,53 @@ app.use(helmet({
   }
 }))
 
-// CORS configuration
+// CORS configuration – production frontend must be allowed so error responses include CORS headers
 const allowedOrigins = [
   process.env.FRONTEND_URL || 'http://localhost:3000',
   'http://localhost:5173', // Vite dev server
+  'https://bit-breaker-psi.vercel.app', // Production frontend (Vercel)
+  'https://bitbreaker.optaimum.com',
+  'https://www.bitbreaker.optaimum.com'
 ].filter(Boolean)
 
 app.use(cors({
   origin: (origin, callback) => {
-    // SECURITY: Only allow requests without origin for specific safe endpoints
-    // This prevents CSRF attacks via no-origin requests
+    // Allow requests without origin (health checks, webhooks, server-to-server)
     if (!origin) {
-      // Allow health checks and webhook callbacks (server-to-server)
-      // Webhooks are protected by signature verification
       return callback(null, true)
     }
-
     if (allowedOrigins.includes(origin)) {
-      callback(null, true)
-    } else {
-      console.warn(`[CORS] Blocked request from origin: ${origin}`)
-      callback(new Error('Not allowed by CORS'))
+      return callback(null, true)
     }
+    // Allow any *.vercel.app preview (Vercel deployment URLs)
+    if (origin.endsWith('.vercel.app')) {
+      return callback(null, true)
+    }
+    console.warn(`[CORS] Blocked request from origin: ${origin}`)
+    callback(new Error('Not allowed by CORS'))
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token', 'x-correlation-id']
 }))
 
+// Ensure CORS on every response (including 500) so browser gets headers
+app.use((req, res, next) => {
+  const o = req.get('Origin')
+  if (o && (allowedOrigins.includes(o) || o.endsWith('.vercel.app'))) {
+    res.setHeader('Access-Control-Allow-Origin', o)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-correlation-id')
+  }
+  next()
+})
+
 // Cookie parser (required for CSRF)
 app.use(cookieParser())
+
+// Disable trust-proxy validation: we intentionally use trust proxy behind Docker/nginx
+const rateLimitValidate = { validate: { trustProxy: false } }
 
 // Global rate limiting
 const globalLimiter = rateLimit({
@@ -102,7 +128,8 @@ const globalLimiter = rateLimit({
   max: isProduction ? 100 : 1000, // More lenient in development
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  ...rateLimitValidate
 })
 app.use(globalLimiter)
 
@@ -110,21 +137,24 @@ app.use(globalLimiter)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isProduction ? 10 : 100,
-  message: { error: 'Too many authentication attempts, please try again later' }
+  message: { error: 'Too many authentication attempts, please try again later' },
+  ...rateLimitValidate
 })
 
 // Stricter rate limiting for payment endpoints
 const paymentLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: isProduction ? 5 : 50,
-  message: { error: 'Too many payment requests, please wait' }
+  message: { error: 'Too many payment requests, please wait' },
+  ...rateLimitValidate
 })
 
 // Stricter rate limiting for game submission
 const gameLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: isProduction ? 20 : 100,
-  message: { error: 'Too many game submissions' }
+  message: { error: 'Too many game submissions' },
+  ...rateLimitValidate
 })
 
 // Body parsing with size limit
@@ -166,9 +196,8 @@ app.get('/api/health', (req, res) => {
 
 // CSRF token endpoint (GET doesn't need CSRF protection)
 app.get('/api/csrf-token', (req, res) => {
-  // Cookie is already set by setCsrfCookie middleware
-  // Return it in response for client to use in header
-  const token = req.cookies['csrf-token']
+  // Cookie set by setCsrfCookie; on first request cookie isn't in req yet, use req.csrfToken
+  const token = req.cookies['csrf-token'] || req.csrfToken
   res.json({ csrfToken: token })
 })
 

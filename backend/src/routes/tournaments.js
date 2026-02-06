@@ -26,19 +26,44 @@ router.get('/current', async (req, res, next) => {
       return res.status(404).json({ error: 'No active tournament' })
     }
 
-    // Get tournament stats
-    const stats = await db.entries.getTournamentStats(tournament.id)
+    // Get tournament stats (defensive: default to 0 if query fails)
+    let stats = { playerCount: 0, totalAttempts: 0 }
+    try {
+      stats = await db.entries.getTournamentStats(tournament.id) || stats
+      stats.playerCount = Number(stats.playerCount) || 0
+      stats.totalAttempts = Number(stats.totalAttempts) || 0
+    } catch (statsErr) {
+      console.error('[TOURNAMENTS] getTournamentStats error:', statsErr?.message || statsErr)
+    }
 
-    // Convert prize pool to USD
-    const prizePoolSats = parseInt(tournament.prize_pool_sats) || 0
-    const { usd: prizePoolUsd, rate } = await satsToUsd(prizePoolSats)
-
-    // Calculate distributable prize (after house fee)
+    const prizePoolSats = parseInt(tournament.prize_pool_sats, 10) || 0
     const distributableSats = Math.floor(prizePoolSats * (1 - HOUSE_FEE_PERCENT))
-    const { usd: distributableUsd } = await satsToUsd(distributableSats)
 
-    // Get buy-in info
-    const buyIn = await getBuyInSats()
+    // Price conversions (defensive: use fallback if price service fails)
+    let prizePoolUsd = 0
+    let distributableUsd = 0
+    let rate = { btcUsd: 100000, satsPerUsd: 1000 }
+    let buyIn = { sats: 10000, usd: 5 }
+    try {
+      const priceResult = await satsToUsd(prizePoolSats)
+      prizePoolUsd = Number(priceResult?.usd) || 0
+      rate = priceResult?.rate || rate
+      const distResult = await satsToUsd(distributableSats)
+      distributableUsd = Number(distResult?.usd) || 0
+      buyIn = await getBuyInSats()
+      buyIn = { sats: Number(buyIn?.sats) || 10000, usd: Number(buyIn?.usd) || 5 }
+    } catch (priceErr) {
+      console.error('[TOURNAMENTS] Price conversion error:', priceErr?.message || priceErr)
+      // Use rough defaults so response still returns
+      const fallbackBtc = Number(process.env.BTC_FALLBACK_PRICE) || 100000
+      rate = { btcUsd: fallbackBtc, satsPerUsd: Math.round(100_000_000 / fallbackBtc) }
+      prizePoolUsd = prizePoolSats / rate.satsPerUsd
+      distributableUsd = distributableSats / rate.satsPerUsd
+    }
+
+    const firstUsd = Math.round(distributableUsd * 0.5 * 100) / 100
+    const secondUsd = Math.round(distributableUsd * 0.3 * 100) / 100
+    const thirdUsd = Math.round(distributableUsd * 0.2 * 100) / 100
 
     res.json({
       id: tournament.id,
@@ -47,22 +72,23 @@ router.get('/current', async (req, res, next) => {
       buyInUsd: buyIn.usd,
       prizePoolSats,
       prizePoolUsd,
-      jackpotUsd: distributableUsd, // Amount winners split
+      jackpotUsd: distributableUsd,
       houseFeePercent: HOUSE_FEE_PERCENT * 100,
-      status: tournament.status,
+      status: tournament.status || 'open',
       startTime: tournament.start_time,
       endTime: tournament.end_time,
       playerCount: stats.playerCount,
       totalAttempts: stats.totalAttempts,
-      entryCount: stats.playerCount, // Kept for backwards compatibility
+      entryCount: stats.playerCount,
       payoutStructure: {
-        first: { percent: 50, sats: Math.floor(distributableSats * 0.5), usd: Math.round(distributableUsd * 0.5 * 100) / 100 },
-        second: { percent: 30, sats: Math.floor(distributableSats * 0.3), usd: Math.round(distributableUsd * 0.3 * 100) / 100 },
-        third: { percent: 20, sats: Math.floor(distributableSats * 0.2), usd: Math.round(distributableUsd * 0.2 * 100) / 100 }
+        first: { percent: 50, sats: Math.floor(distributableSats * 0.5), usd: firstUsd },
+        second: { percent: 30, sats: Math.floor(distributableSats * 0.3), usd: secondUsd },
+        third: { percent: 20, sats: Math.floor(distributableSats * 0.2), usd: thirdUsd }
       },
       exchangeRate: rate
     })
   } catch (error) {
+    console.error('[TOURNAMENTS] /current error:', error?.message || error)
     next(error)
   }
 })
@@ -80,13 +106,15 @@ router.get('/current/leaderboard', async (req, res, next) => {
     }
 
     const entries = await db.entries.getLeaderboard(tournament.id, 100)
+    const list = Array.isArray(entries) ? entries : []
 
-    res.json(entries.map(e => ({
-      userId: e.user_id,
-      displayName: e.display_name,
-      bestScore: e.best_score
+    res.json(list.map(e => ({
+      userId: e?.user_id ?? null,
+      displayName: e?.display_name ?? 'Player',
+      bestScore: Number(e?.best_score) || 0
     })))
   } catch (error) {
+    console.error('[TOURNAMENTS] Leaderboard error:', error?.message || error)
     next(error)
   }
 })
@@ -163,13 +191,15 @@ router.get('/:id', async (req, res, next) => {
 router.get('/:id/leaderboard', async (req, res, next) => {
   try {
     const entries = await db.entries.getLeaderboard(req.params.id, 100)
+    const list = Array.isArray(entries) ? entries : []
 
-    res.json(entries.map(e => ({
-      userId: e.user_id,
-      displayName: e.display_name,
-      bestScore: e.best_score
+    res.json(list.map(e => ({
+      userId: e?.user_id ?? null,
+      displayName: e?.display_name ?? 'Player',
+      bestScore: Number(e?.best_score) || 0
     })))
   } catch (error) {
+    console.error('[TOURNAMENTS] Leaderboard by id error:', error?.message || error)
     next(error)
   }
 })

@@ -115,15 +115,20 @@ export function csrfProtection(req, res, next) {
 
 /**
  * Middleware to set CSRF cookie for new sessions
+ * When we set a new cookie, attach token to req so GET /api/csrf-token can return it
+ * (cookie is not in req until the next request)
  */
 export function setCsrfCookie(req, res, next) {
   // Only set if not already present
   if (!req.cookies?.[CSRF_COOKIE]) {
     const token = generateCsrfToken()
+    req.csrfToken = token
+    const isProduction = process.env.NODE_ENV === 'production'
     res.cookie(CSRF_COOKIE, token, {
       httpOnly: false,  // Must be readable by JavaScript
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: isProduction,
+      // SameSite=none so cookie is sent on cross-origin requests (Vercel -> API)
+      sameSite: isProduction ? 'none' : 'strict',
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
     })
   }
