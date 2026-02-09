@@ -14,12 +14,13 @@ const MAX_POLL_ATTEMPTS = 12
 function WalletModal({ user, onClose, onUpdate }) {
   const [balance, setBalance] = useState({ sats: 0, usd: 0 })
   const [exchangeRate, setExchangeRate] = useState({ btcUsd: 0, satsPerUsd: 0 })
+  const [buyInUsd, setBuyInUsd] = useState(5) // Cost per play - default so one deposit = one attempt
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // Deposit state
-  const [depositAmount, setDepositAmount] = useState(0.50) // Default $0.50 for testing
+  // Deposit state - default to cost of one play so deposit allows playing
+  const [depositAmount, setDepositAmount] = useState(5)
   const [depositInvoice, setDepositInvoice] = useState(null)
   const [depositHash, setDepositHash] = useState(null)
   const [checkingPayment, setCheckingPayment] = useState(false)
@@ -110,7 +111,12 @@ function WalletModal({ user, onClose, onUpdate }) {
         sats: balanceData.balanceSats || 0,
         usd: balanceData.balanceUsd || 0
       })
-      setExchangeRate(balanceData.exchangeRate || { btcUsd: 0, satsPerUsd: 0 })
+      const rate = balanceData.exchangeRate || { btcUsd: 0, satsPerUsd: 0 }
+      setExchangeRate(rate)
+      const costUsd = balanceData.buyInUsd ?? 5
+      setBuyInUsd(costUsd)
+      // Default deposit to cost of one play so user can play after depositing
+      setDepositAmount((prev) => (prev < costUsd ? costUsd : prev))
 
       // Fetch transactions
       const txRes = await fetch(`${API_BASE}/wallet/transactions?limit=10`, {
@@ -128,13 +134,18 @@ function WalletModal({ user, onClose, onUpdate }) {
   const handleDeposit = async () => {
     if (!user?.token || depositAmount < 0.10 || generatingInvoice) return
 
+    // Require valid exchange rate so we don't send 0 or wrong sats
+    const satsPerUsd = exchangeRate.satsPerUsd > 0 ? exchangeRate.satsPerUsd : 4000 // fallback ~$100k/BTC
+    const amountSats = Math.round(depositAmount * satsPerUsd)
+    if (amountSats < 10) {
+      setError('Amount too small. Please enter at least $0.01 or refresh to get the current rate.')
+      return
+    }
+
     setError('')
     setGeneratingInvoice(true)
 
     try {
-      // Convert USD to sats
-      const amountSats = Math.round(depositAmount * exchangeRate.satsPerUsd)
-
       const res = await fetch(`${API_BASE}/wallet/deposit`, {
         method: 'POST',
         headers: {
@@ -311,8 +322,11 @@ function WalletModal({ user, onClose, onUpdate }) {
                     </button>
                   </div>
                 </div>
+                <p style={{ color: '#888', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+                  One attempt = ${buyInUsd.toFixed(2)}. Deposit at least ${buyInUsd.toFixed(2)} to play.
+                </p>
                 <p style={{ color: '#666', fontSize: '0.75rem' }}>
-                  Minimum deposit: $0.10 (~{Math.round(0.10 * exchangeRate.satsPerUsd).toLocaleString()} sats)
+                  Minimum deposit: $0.10 (~{Math.round(0.10 * (exchangeRate.satsPerUsd || 4000)).toLocaleString()} sats)
                 </p>
               </div>
             ) : (

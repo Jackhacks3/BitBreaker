@@ -38,8 +38,11 @@ import {
   validateHeaders,
   securityLogger,
   notFoundHandler,
-  requestCorrelation
+  requestCorrelation,
+  generateCsrfToken
 } from './middleware/security.js'
+import { requireAuth } from './routes/auth.js'
+import * as cacheStore from './services/cacheStore.js'
 
 const app = express()
 
@@ -194,10 +197,11 @@ app.get('/api/health', (req, res) => {
   })
 })
 
-// CSRF token endpoint (GET doesn't need CSRF protection)
-app.get('/api/csrf-token', (req, res) => {
-  // Cookie set by setCsrfCookie; on first request cookie isn't in req yet, use req.csrfToken
-  const token = req.cookies['csrf-token'] || req.csrfToken
+// CSRF token endpoint (requires auth so we can bind token to user for cross-origin)
+app.get('/api/csrf-token', requireAuth, async (req, res) => {
+  const token = req.cookies['csrf-token'] || req.csrfToken || generateCsrfToken()
+  const CSRF_CACHE_TTL = 3600 // 1 hour
+  await cacheStore.set(`csrf:${req.userId}`, token, CSRF_CACHE_TTL)
   res.json({ csrfToken: token })
 })
 
@@ -313,6 +317,12 @@ async function start() {
     // Check LNbits configuration
     if (!process.env.LNBITS_API_KEY && isProduction) {
       securityErrors.push('LNBITS_API_KEY is required in production')
+    }
+    const lnbitsUrl = (process.env.LNBITS_URL || '').toLowerCase()
+    if (isProduction && (lnbitsUrl.includes('demo.lnbits.com') || lnbitsUrl === '')) {
+      securityErrors.push(
+        'LNBITS_URL must be set to your production LNbits instance (do not use demo.lnbits.com or leave unset)'
+      )
     }
 
     // Fail startup if critical security requirements not met

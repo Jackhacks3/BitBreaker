@@ -63,6 +63,9 @@ services:
       - LNBITS_API_KEY=${LNBITS_API_KEY}
       - LNBITS_ADMIN_KEY=${LNBITS_ADMIN_KEY}
       - LNBITS_WEBHOOK_SECRET=${LNBITS_WEBHOOK_SECRET}
+      # Email (Resend – verification & password reset)
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - EMAIL_SENDER=${EMAIL_SENDER}
     volumes:
       - ./backend:/app
       - /app/node_modules

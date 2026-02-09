@@ -246,6 +246,19 @@ export async function initDatabase() {
           END IF;
         END $$;
 
+        -- Add email and email_verified_at for confirmation / password recovery
+        DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name='users' AND column_name='email') THEN
+            ALTER TABLE users ADD COLUMN email VARCHAR(255) UNIQUE;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name='users' AND column_name='email_verified_at') THEN
+            ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMP;
+          END IF;
+        END $$;
+
         -- Add attempt tracking columns to tournament_entries
         DO $$
         BEGIN
@@ -473,19 +486,29 @@ export const users = {
     return queryOne('SELECT * FROM users WHERE username = $1', [username])
   },
 
-  async createWithPassword(displayName, username, passwordHash) {
+  async findByEmail(email) {
     if (useMockDb) {
-      // Check if username exists
       for (const user of mockData.users.values()) {
-        if (user.username === username) {
-          throw new Error('Username already exists')
-        }
+        if (user.email === email) return user
+      }
+      return null
+    }
+    return queryOne('SELECT * FROM users WHERE email = $1', [email])
+  },
+
+  async createWithPassword(displayName, username, passwordHash, email = null) {
+    if (useMockDb) {
+      for (const user of mockData.users.values()) {
+        if (user.username === username) throw new Error('Username already exists')
+        if (email && user.email === email) throw new Error('Email already in use')
       }
       const user = {
         id: uuid(),
         display_name: displayName,
         username: username,
         password_hash: passwordHash,
+        email: email || null,
+        email_verified_at: null,
         lightning_address: null,
         linking_key: null,
         last_login_at: new Date(),
@@ -493,6 +516,14 @@ export const users = {
       }
       mockData.users.set(user.id, user)
       return user
+    }
+    if (email) {
+      return queryOne(
+        `INSERT INTO users (display_name, username, password_hash, email, last_login_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         RETURNING *`,
+        [displayName, username, passwordHash, email]
+      )
     }
     return queryOne(
       `INSERT INTO users (display_name, username, password_hash, last_login_at)
@@ -503,6 +534,7 @@ export const users = {
   },
 
   async updateLastLogin(userId) {
+
     if (useMockDb) {
       const user = mockData.users.get(userId)
       if (user) {
@@ -514,6 +546,36 @@ export const users = {
     return queryOne(
       `UPDATE users SET last_login_at = NOW() WHERE id = $1 RETURNING *`,
       [userId]
+    )
+  },
+
+  async updateEmailVerified(userId) {
+    if (useMockDb) {
+      const user = mockData.users.get(userId)
+      if (user) {
+        user.email_verified_at = new Date()
+        return user
+      }
+      return null
+    }
+    return queryOne(
+      `UPDATE users SET email_verified_at = NOW() WHERE id = $1 RETURNING *`,
+      [userId]
+    )
+  },
+
+  async updatePassword(userId, passwordHash) {
+    if (useMockDb) {
+      const user = mockData.users.get(userId)
+      if (user) {
+        user.password_hash = passwordHash
+        return user
+      }
+      return null
+    }
+    return queryOne(
+      `UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING *`,
+      [userId, passwordHash]
     )
   }
 }

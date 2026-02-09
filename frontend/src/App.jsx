@@ -8,10 +8,12 @@ import PlayerGuideModal from './components/Guide/PlayerGuideModal'
 import { API_BASE as API_URL } from './utils/api'
 import './App.css'
 
-// Fetch CSRF token for protected routes (must use credentials so cookie is sent/received)
-async function getCsrfToken() {
+// Fetch CSRF token for protected routes (requires auth so server can bind token to user for cross-origin)
+async function getCsrfToken(authToken) {
   try {
-    const res = await fetch(`${API_URL}/csrf-token`, { credentials: 'include' })
+    const headers = {}
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+    const res = await fetch(`${API_URL}/csrf-token`, { credentials: 'include', headers })
     const data = await res.json()
     const token = data?.csrfToken
     if (!token) {
@@ -46,6 +48,9 @@ function App() {
   const [showRules, setShowRules] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [verifyResult, setVerifyResult] = useState(null) // { ok, message } when ?verify-email=token
+  const [resetToken, setResetToken] = useState(null)   // token when ?reset-password=token
+  const [resetResult, setResetResult] = useState(null)  // { ok, message } after submit
   const [currentScore, setCurrentScore] = useState(0)
   const [currentAttemptId, setCurrentAttemptId] = useState(null)
   const [currentAttemptNumber, setCurrentAttemptNumber] = useState(null)
@@ -63,6 +68,24 @@ function App() {
       const userData = JSON.parse(savedUser)
       setUser(userData)
       setIsLoggedIn(true)
+    }
+  }, [])
+
+  // Handle verify-email and reset-password query params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const verifyToken = params.get('verify-email')
+    const reset = params.get('reset-password')
+    if (verifyToken && !verifyResult) {
+      fetch(`${API_URL}/auth/verify-email?token=${encodeURIComponent(verifyToken)}`)
+        .then((res) => res.json())
+        .then((data) => setVerifyResult({ ok: data.verified, message: data.message || (data.error || 'Done') }))
+        .catch(() => setVerifyResult({ ok: false, message: 'Verification failed' }))
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    if (reset) {
+      setResetToken(reset)
+      window.history.replaceState({}, '', window.location.pathname)
     }
   }, [])
 
@@ -222,8 +245,8 @@ function App() {
     setShowConfirm(false)
 
     try {
-      // Get CSRF token first
-      const csrfToken = await getCsrfToken()
+      // Get CSRF token first (pass auth so server can bind token when cookie is blocked cross-origin)
+      const csrfToken = await getCsrfToken(user?.token)
 
       if (!csrfToken) {
         alert('Could not get security token. Please refresh the page and try again.')
@@ -284,8 +307,8 @@ function App() {
 
     if (user && currentAttemptId) {
       try {
-        // Get CSRF token for submission
-        const csrfToken = await getCsrfToken()
+        // Get CSRF token for submission (pass auth for cross-origin)
+        const csrfToken = await getCsrfToken(user?.token)
 
         const res = await fetch(`${API_URL}/game/submit`, {
           method: 'POST',
@@ -342,8 +365,57 @@ function App() {
     setShowConfirm(true)
   }
 
+  // Reset password form submit (when opened via ?reset-password=token)
+  const handleResetPassword = async (newPassword) => {
+    if (!resetToken) return
+    try {
+      const res = await fetch(`${API_URL}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, newPassword })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Reset failed')
+      setResetResult({ ok: true, message: data.message || 'Password reset. You can now log in.' })
+      setResetToken(null)
+      window.history.replaceState({}, '', window.location.pathname)
+    } catch (err) {
+      setResetResult({ ok: false, message: err.message })
+    }
+  }
+
   return (
     <div className="app">
+      {/* Verify email result overlay */}
+      {verifyResult && (
+        <div className="modal-overlay" style={{ alignItems: 'center', justifyContent: 'center' }}>
+          <div className="modal" style={{ maxWidth: '360px', textAlign: 'center' }}>
+            <h3 style={{ color: verifyResult.ok ? '#2ecc71' : '#e74c3c', marginBottom: '1rem' }}>
+              {verifyResult.ok ? 'Email verified' : 'Verification failed'}
+            </h3>
+            <p style={{ color: '#ccc', marginBottom: '1rem' }}>{verifyResult.message}</p>
+            <button className="btn-confirm" onClick={() => setVerifyResult(null)}>OK</button>
+          </div>
+        </div>
+      )}
+
+      {/* Reset password overlay (from email link ?reset-password=token) */}
+      {resetToken && !resetResult?.ok && (
+        <ResetPasswordOverlay
+          onSubmit={handleResetPassword}
+          onCancel={() => { setResetToken(null); window.history.replaceState({}, '', window.location.pathname) }}
+        />
+      )}
+      {resetResult?.ok && (
+        <div className="modal-overlay" style={{ alignItems: 'center', justifyContent: 'center' }}>
+          <div className="modal" style={{ maxWidth: '360px', textAlign: 'center' }}>
+            <h3 style={{ color: '#2ecc71', marginBottom: '1rem' }}>Password reset</h3>
+            <p style={{ color: '#ccc', marginBottom: '1rem' }}>{resetResult.message}</p>
+            <button className="btn-confirm" onClick={() => setResetResult(null)}>OK</button>
+          </div>
+        </div>
+      )}
+
       {/* Top Bar - Jackpot and Timer */}
       <header className="header">
         <div className="jackpot-display">
@@ -543,6 +615,90 @@ function AttemptIndicator({ attempts, scores }) {
       {scores.best > 0 && (
         <div className="best-score">Best: {scores.best.toLocaleString()}</div>
       )}
+    </div>
+  )
+}
+
+// Reset password overlay (from email link ?reset-password=token)
+function ResetPasswordOverlay({ onSubmit, onCancel }) {
+  const [newPassword, setNewPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    if (newPassword.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+    if (newPassword !== confirm) {
+      setError('Passwords do not match')
+      return
+    }
+    setLoading(true)
+    try {
+      await onSubmit(newPassword)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div className="modal" style={{ maxWidth: '360px' }}>
+        <h3 style={{ color: '#ffd700', marginBottom: '1rem' }}>Set new password</h3>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ color: '#aaa', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>New password</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Min 8 characters"
+              minLength={8}
+              required
+              style={{
+                width: '100%',
+                padding: '0.75rem',
+                background: 'rgba(255,255,255,0.1)',
+                border: '1px solid rgba(255,215,0,0.3)',
+                borderRadius: '5px',
+                color: '#fff',
+                fontSize: '1rem',
+                boxSizing: 'border-box'
+              }}
+            />
+          </div>
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ color: '#aaa', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>Confirm password</label>
+            <input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Repeat password"
+              minLength={8}
+              required
+              style={{
+                width: '100%',
+                padding: '0.75rem',
+                background: 'rgba(255,255,255,0.1)',
+                border: '1px solid rgba(255,215,0,0.3)',
+                borderRadius: '5px',
+                color: '#fff',
+                fontSize: '1rem',
+                boxSizing: 'border-box'
+              }}
+            />
+          </div>
+          {error && <p style={{ color: '#e74c3c', fontSize: '0.9rem', marginBottom: '0.5rem' }}>{error}</p>}
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button type="submit" className="btn-confirm" disabled={loading}>{loading ? 'Saving...' : 'Reset password'}</button>
+            <button type="button" className="btn-cancel" onClick={onCancel}>Cancel</button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }

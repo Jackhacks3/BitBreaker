@@ -17,7 +17,7 @@ Copy these values to **Render Dashboard > Your Service > Environment > Add Envir
 
 | Key | Value |
 |-----|-------|
-| `LNBITS_URL` | `https://demo.lnbits.com` |
+| `LNBITS_URL` | Your production LNbits URL (do **not** use `https://demo.lnbits.com`) |
 | `LNBITS_API_KEY` | `38ef31f4a6dd47ad8b713ba89645aa21` |
 | `LNBITS_ADMIN_KEY` | `d3422d9c267744eaae36ba2e9ae151ee` |
 | `LNBITS_WEBHOOK_SECRET` | `3f2ff8c0cbf153df18f8948c184979ef8b5156fea9864cdf970e291d98c86ddb` |

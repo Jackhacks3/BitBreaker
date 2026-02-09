@@ -34,6 +34,7 @@ router.get('/balance', requireAuth, async (req, res, next) => {
 
     // Convert to USD for display
     const { usd, rate } = await satsToUsd(balanceSats)
+    const { usd: buyInUsd, sats: buyInSats } = await getBuyInSats()
 
     res.json({
       balanceSats,
@@ -42,7 +43,9 @@ router.get('/balance', requireAuth, async (req, res, next) => {
       exchangeRate: {
         btcUsd: rate.btcUsd,
         satsPerUsd: rate.satsPerUsd
-      }
+      },
+      buyInUsd: buyInUsd ?? 5,
+      buyInSats: buyInSats ?? 0
     })
   } catch (error) {
     next(error)

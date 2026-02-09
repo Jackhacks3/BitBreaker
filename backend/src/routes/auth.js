@@ -1,10 +1,18 @@
+import crypto from 'crypto'
 import { Router } from 'express'
 import bcrypt from 'bcrypt'
 import db from '../services/database.js'
 import sessionStore from '../services/sessionStore.js'
-import { sanitizeDisplayName, sanitizeLightningAddress } from '../utils/sanitize.js'
+import * as cacheStore from '../services/cacheStore.js'
+import * as emailService from '../services/emailService.js'
+import { sanitizeDisplayName, sanitizeEmail, sanitizeLightningAddress } from '../utils/sanitize.js'
 
 const router = Router()
+
+const VERIFY_PREFIX = 'verify:'
+const RESET_PREFIX = 'reset:'
+const VERIFY_TTL = 24 * 60 * 60 // 24 hours
+const RESET_TTL = 60 * 60 // 1 hour
 
 /**
  * Auth Routes
@@ -53,11 +61,11 @@ function validatePassword(password) {
 
 /**
  * POST /api/auth/register
- * Register a new user with username/password
+ * Register a new user with username/password and email (for confirmation)
  */
 router.post('/register', async (req, res, next) => {
   try {
-    const { username, password, displayName } = req.body
+    const { username, password, displayName, email } = req.body
 
     // Validate username
     const usernameResult = validateUsername(username)
@@ -80,17 +88,33 @@ router.post('/register', async (req, res, next) => {
     const cleanUsername = usernameResult.sanitized
     const cleanName = nameResult.sanitized
 
+    // Validate and sanitize email (optional but recommended for confirmation)
+    let cleanEmail = null
+    if (email) {
+      const emailResult = sanitizeEmail(email)
+      if (!emailResult.valid) {
+        return res.status(400).json({ error: emailResult.error })
+      }
+      cleanEmail = emailResult.sanitized
+    }
+
     // Check if username already exists
     const existingUser = await db.users.findByUsername(cleanUsername)
     if (existingUser) {
       return res.status(400).json({ error: 'Username already taken' })
     }
+    if (cleanEmail) {
+      const existingEmail = await db.users.findByEmail(cleanEmail)
+      if (existingEmail) {
+        return res.status(400).json({ error: 'Email already in use' })
+      }
+    }
 
     // Hash password
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS)
 
-    // Create user
-    const user = await db.users.createWithPassword(cleanName, cleanUsername, passwordHash)
+    // Create user (with optional email)
+    const user = await db.users.createWithPassword(cleanName, cleanUsername, passwordHash, cleanEmail)
 
     if (!user) {
       console.error('[AUTH] User creation returned null')
@@ -121,13 +145,24 @@ router.post('/register', async (req, res, next) => {
       })
     }
 
+    // Send verification email if email provided
+    if (cleanEmail) {
+      const verifyToken = crypto.randomBytes(32).toString('hex')
+      await cacheStore.set(`${VERIFY_PREFIX}${verifyToken}`, user.id, VERIFY_TTL)
+      await emailService.sendVerificationEmail(cleanEmail, verifyToken).catch((e) =>
+        console.warn('[AUTH] Verification email send failed:', e.message)
+      )
+    }
+
     console.log(`[AUTH] User registered: ${user.id.substring(0, 8)}... (${cleanUsername})`)
 
     res.json({
       userId: user.id,
       username: user.username,
       displayName: user.display_name,
-      token
+      token,
+      emailSent: !!cleanEmail,
+      message: cleanEmail ? 'Account created. Please check your email to verify.' : undefined
     })
   } catch (error) {
     next(error)
@@ -192,6 +227,84 @@ router.post('/login', async (req, res, next) => {
       displayName: user.display_name,
       token
     })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * GET /api/auth/verify-email?token=
+ * Verify email from link in confirmation email
+ */
+router.get('/verify-email', async (req, res, next) => {
+  try {
+    const token = req.query.token
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Invalid or missing verification token' })
+    }
+    const userId = await cacheStore.get(`${VERIFY_PREFIX}${token}`)
+    if (!userId) {
+      return res.status(400).json({ error: 'Verification link expired or invalid' })
+    }
+    await db.users.updateEmailVerified(userId)
+    await cacheStore.del(`${VERIFY_PREFIX}${token}`)
+    res.json({ verified: true, message: 'Email verified successfully' })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/auth/forgot-password
+ * Request password reset; sends email with reset link
+ */
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = req.body
+    const emailResult = sanitizeEmail(email)
+    if (!emailResult.valid) {
+      return res.status(400).json({ error: emailResult.error })
+    }
+    const cleanEmail = emailResult.sanitized
+    const user = await db.users.findByEmail(cleanEmail)
+    // Always return same message to prevent email enumeration
+    const message = 'If an account exists for this email, you will receive a password reset link.'
+    if (!user) {
+      return res.json({ message })
+    }
+    const resetToken = crypto.randomBytes(32).toString('hex')
+    await cacheStore.set(`${RESET_PREFIX}${resetToken}`, user.id, RESET_TTL)
+    await emailService.sendPasswordResetEmail(cleanEmail, resetToken).catch((e) =>
+      console.warn('[AUTH] Reset email send failed:', e.message)
+    )
+    res.json({ message })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * POST /api/auth/reset-password
+ * Set new password using token from email link
+ */
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, newPassword } = req.body
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Invalid or missing reset token' })
+    }
+    const passwordResult = validatePassword(newPassword)
+    if (!passwordResult.valid) {
+      return res.status(400).json({ error: passwordResult.error })
+    }
+    const userId = await cacheStore.get(`${RESET_PREFIX}${token}`)
+    if (!userId) {
+      return res.status(400).json({ error: 'Reset link expired or invalid' })
+    }
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS)
+    await db.users.updatePassword(userId, passwordHash)
+    await cacheStore.del(`${RESET_PREFIX}${token}`)
+    res.json({ message: 'Password reset successfully. You can now log in.' })
   } catch (error) {
     next(error)
   }

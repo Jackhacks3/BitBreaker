@@ -17,6 +17,8 @@
  */
 
 import crypto, { randomUUID } from 'crypto'
+import sessionStore from '../services/sessionStore.js'
+import * as cacheStore from '../services/cacheStore.js'
 
 // ==================== REQUEST CORRELATION ====================
 
@@ -46,16 +48,17 @@ export function generateCsrfToken() {
 }
 
 /**
- * CSRF protection middleware (Double Submit Cookie pattern)
+ * CSRF protection middleware (Double Submit Cookie + server-side fallback)
  *
  * For state-changing requests (POST, PUT, DELETE, PATCH):
- * - Requires token in header AND cookie
- * - Tokens must match (timing-safe comparison)
+ * - Prefer: token in header AND cookie, must match (same-origin).
+ * - Fallback: when cookie is missing (cross-origin, third-party cookie blocked),
+ *   validate header token against server-stored token (csrf:userId) using Bearer auth.
  *
  * Safe methods (GET, HEAD, OPTIONS) are skipped.
  * Webhook endpoints are skipped (they use signature verification).
  */
-export function csrfProtection(req, res, next) {
+export async function csrfProtection(req, res, next) {
   // Safe methods don't need CSRF protection
   const safeMethods = ['GET', 'HEAD', 'OPTIONS']
   if (safeMethods.includes(req.method)) {
@@ -67,50 +70,56 @@ export function csrfProtection(req, res, next) {
     return next()
   }
 
-  // Get tokens from header and cookie
   const tokenFromHeader = req.headers[CSRF_HEADER]
   const tokenFromCookie = req.cookies?.[CSRF_COOKIE]
 
-  // Both must be present
-  if (!tokenFromHeader || !tokenFromCookie) {
-    console.warn(`CSRF token missing - IP: ${req.ip}, Path: ${req.path}`)
+  // Header is required in all cases
+  if (!tokenFromHeader || tokenFromHeader.length !== CSRF_TOKEN_LENGTH * 2) {
+    console.warn(`CSRF token missing or invalid format - IP: ${req.ip}, Path: ${req.path}`)
     return res.status(403).json({
       error: 'CSRF token missing',
       code: 'CSRF_MISSING'
     })
   }
 
-  // Validate token format
-  if (tokenFromHeader.length !== CSRF_TOKEN_LENGTH * 2 ||
-      tokenFromCookie.length !== CSRF_TOKEN_LENGTH * 2) {
-    console.warn(`CSRF token invalid format - IP: ${req.ip}`)
-    return res.status(403).json({
-      error: 'CSRF token invalid',
-      code: 'CSRF_INVALID'
-    })
-  }
-
-  // Timing-safe comparison to prevent timing attacks
-  try {
-    const headerBuffer = Buffer.from(tokenFromHeader, 'hex')
-    const cookieBuffer = Buffer.from(tokenFromCookie, 'hex')
-
-    if (!crypto.timingSafeEqual(headerBuffer, cookieBuffer)) {
-      console.warn(`CSRF token mismatch - IP: ${req.ip}, Path: ${req.path}`)
-      return res.status(403).json({
-        error: 'CSRF token mismatch',
-        code: 'CSRF_MISMATCH'
-      })
+  // Same-origin: validate with cookie (double submit)
+  if (tokenFromCookie && tokenFromCookie.length === CSRF_TOKEN_LENGTH * 2) {
+    try {
+      const headerBuffer = Buffer.from(tokenFromHeader, 'hex')
+      const cookieBuffer = Buffer.from(tokenFromCookie, 'hex')
+      if (crypto.timingSafeEqual(headerBuffer, cookieBuffer)) {
+        return next()
+      }
+    } catch (e) {
+      // fall through to server-side check or reject
     }
-  } catch (e) {
-    console.warn(`CSRF token comparison failed - IP: ${req.ip}`)
-    return res.status(403).json({
-      error: 'CSRF token invalid',
-      code: 'CSRF_INVALID'
-    })
   }
 
-  next()
+  // Cross-origin fallback: validate header against server-stored token (csrf:userId)
+  const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+  if (bearer) {
+    try {
+      const session = await sessionStore.getSession(bearer)
+      if (session?.userId) {
+        const stored = await cacheStore.get(`csrf:${session.userId}`)
+        if (stored && typeof stored === 'string' && stored.length === CSRF_TOKEN_LENGTH * 2) {
+          const headerBuffer = Buffer.from(tokenFromHeader, 'hex')
+          const storedBuffer = Buffer.from(stored, 'hex')
+          if (headerBuffer.length === storedBuffer.length && crypto.timingSafeEqual(headerBuffer, storedBuffer)) {
+            return next()
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`CSRF server-side check failed - IP: ${req.ip}`, e.message)
+    }
+  }
+
+  console.warn(`CSRF token missing - IP: ${req.ip}, Path: ${req.path}`)
+  return res.status(403).json({
+    error: 'CSRF token missing',
+    code: 'CSRF_MISSING'
+  })
 }
 
 /**

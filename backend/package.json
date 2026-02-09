@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "resend": "^4.0.0",
     "bech32": "^2.0.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",

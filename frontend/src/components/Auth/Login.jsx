@@ -12,13 +12,15 @@ import { API_BASE } from '../../utils/api'
  */
 
 function Login({ onLogin }) {
-  const [mode, setMode] = useState('login') // login | register
+  const [mode, setMode] = useState('login') // login | register | forgot
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
+  const [email, setEmail] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
+  const [forgotSent, setForgotSent] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -26,10 +28,23 @@ function Login({ onLogin }) {
     setLoading(true)
 
     try {
+      if (mode === 'forgot') {
+        const response = await fetch(`${API_BASE}/auth/forgot-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'Request failed')
+        setForgotSent(true)
+        setLoading(false)
+        return
+      }
+
       const endpoint = mode === 'login' ? '/auth/login' : '/auth/register'
       const body = mode === 'login'
         ? { username, password }
-        : { username, password, displayName: displayName || username }
+        : { username, password, displayName: displayName || username, email: email || undefined }
 
       const response = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
@@ -64,12 +79,22 @@ function Login({ onLogin }) {
     setUsername('')
     setPassword('')
     setDisplayName('')
+    setEmail('')
     setError('')
+    setForgotSent(false)
   }
 
   const toggleMode = () => {
-    setMode(mode === 'login' ? 'register' : 'login')
+    const next = mode === 'login' ? 'register' : mode === 'register' ? 'login' : 'login'
+    setMode(next)
     setError('')
+    setForgotSent(false)
+  }
+
+  const showForgot = () => {
+    setMode('forgot')
+    setError('')
+    setForgotSent(false)
   }
 
   // Render login button
@@ -123,16 +148,58 @@ function Login({ onLogin }) {
       }}>
         {/* Header */}
         <h2 style={{ marginBottom: '0.5rem', color: '#ffd700' }}>
-          {mode === 'login' ? 'Welcome Back!' : 'Create Account'}
+          {mode === 'login' ? 'Welcome Back!' : mode === 'forgot' ? 'Forgot password' : 'Create Account'}
         </h2>
         <p style={{ color: '#888', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
           {mode === 'login'
             ? 'Login to play and compete for the jackpot'
-            : 'Sign up to start playing - $5 per attempt, 3 max daily'}
+            : mode === 'forgot'
+              ? 'Enter your email to receive a password reset link'
+              : 'Sign up to start playing - $5 per attempt, 3 max daily'}
         </p>
+
+        {/* Forgot password success */}
+        {mode === 'forgot' && forgotSent && (
+          <div style={{
+            padding: '1rem',
+            background: 'rgba(46, 204, 113, 0.2)',
+            border: '1px solid rgba(46, 204, 113, 0.5)',
+            borderRadius: '5px',
+            color: '#2ecc71',
+            marginBottom: '1rem',
+            fontSize: '0.9rem'
+          }}>
+            If an account exists for that email, you will receive a reset link. Check your inbox.
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit}>
+          {mode === 'forgot' ? (
+            <div style={{ marginBottom: '1.5rem', textAlign: 'left' }}>
+              <label style={{ color: '#aaa', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your email"
+                required
+                style={{
+                  width: '100%',
+                  padding: '0.75rem',
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 215, 0, 0.3)',
+                  borderRadius: '5px',
+                  color: '#fff',
+                  fontSize: '1rem',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+          ) : (
+            <>
           {/* Username */}
           <div style={{ marginBottom: '1rem', textAlign: 'left' }}>
             <label style={{ color: '#aaa', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
@@ -187,8 +254,34 @@ function Login({ onLogin }) {
             </div>
           )}
 
-          {/* Password */}
-          <div style={{ marginBottom: '1.5rem', textAlign: 'left' }}>
+          {/* Email (register only) - for confirmation */}
+          {mode === 'register' && (
+            <div style={{ marginBottom: '1rem', textAlign: 'left' }}>
+              <label style={{ color: '#aaa', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                Email <span style={{ color: '#666' }}>(optional, for verification)</span>
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="For email confirmation"
+                style={{
+                  width: '100%',
+                  padding: '0.75rem',
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  border: '1px solid rgba(255, 215, 0, 0.3)',
+                  borderRadius: '5px',
+                  color: '#fff',
+                  fontSize: '1rem',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+          )}
+
+          {/* Password (hide in forgot mode) */}
+          {mode !== 'forgot' && (
+          <div style={{ marginBottom: mode === 'login' ? '0.5rem' : '1.5rem', textAlign: 'left' }}>
             <label style={{ color: '#aaa', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
               Password
             </label>
@@ -197,7 +290,7 @@ function Login({ onLogin }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={mode === 'register' ? 'Min 8 characters' : 'Enter password'}
-              required
+              required={mode !== 'forgot'}
               minLength={mode === 'register' ? 8 : 1}
               style={{
                 width: '100%',
@@ -210,7 +303,27 @@ function Login({ onLogin }) {
                 boxSizing: 'border-box'
               }}
             />
+            {mode === 'login' && (
+              <button
+                type="button"
+                onClick={showForgot}
+                style={{
+                  marginTop: '0.25rem',
+                  background: 'none',
+                  border: 'none',
+                  color: '#888',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  textDecoration: 'underline'
+                }}
+              >
+                Forgot password?
+              </button>
+            )}
           </div>
+          )}
+            </>
+          )}
 
           {/* Error message */}
           {error && (
@@ -244,13 +357,13 @@ function Login({ onLogin }) {
               marginBottom: '1rem'
             }}
           >
-            {loading ? 'Please wait...' : mode === 'login' ? 'Login' : 'Create Account'}
+            {loading ? 'Please wait...' : mode === 'login' ? 'Login' : mode === 'forgot' ? 'Send reset link' : 'Create Account'}
           </button>
         </form>
 
         {/* Toggle mode */}
         <p style={{ color: '#888', fontSize: '0.9rem', marginBottom: '1rem' }}>
-          {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}
+          {mode === 'forgot' ? 'Remember your password?' : mode === 'login' ? "Don't have an account?" : 'Already have an account?'}
           <button
             onClick={toggleMode}
             style={{
@@ -262,7 +375,7 @@ function Login({ onLogin }) {
               textDecoration: 'underline'
             }}
           >
-            {mode === 'login' ? 'Sign Up' : 'Login'}
+            {mode === 'forgot' ? 'Back to Login' : mode === 'login' ? 'Sign Up' : 'Login'}
           </button>
         </p>
 

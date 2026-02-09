@@ -269,6 +269,27 @@ export function sanitizeLevel(level) {
 }
 
 /**
+ * Sanitize email for registration / password recovery
+ * - Valid format: local@domain.tld
+ * - Lowercase, max 255 chars
+ *
+ * @param {string} email - Raw email
+ * @returns {{valid: boolean, sanitized: string, error?: string}}
+ */
+export function sanitizeEmail(email) {
+  if (email === null || email === undefined || typeof email !== 'string') {
+    return { valid: false, sanitized: '', error: 'Email is required' }
+  }
+  const cleaned = email.trim().toLowerCase()
+  if (cleaned.length === 0) return { valid: false, sanitized: '', error: 'Email is required' }
+  if (cleaned.length > 255) return { valid: false, sanitized: '', error: 'Email is too long' }
+  // Simple format: something@domain.tld
+  const re = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i
+  if (!re.test(cleaned)) return { valid: false, sanitized: '', error: 'Invalid email format' }
+  return { valid: true, sanitized: cleaned }
+}
+
+/**
  * Sanitize generic string input
  *
  * @param {any} str - Raw string input
@@ -298,6 +319,7 @@ export function sanitizeString(str, maxLength = 1000) {
 export default {
   sanitizeDisplayName,
   sanitizeLightningAddress,
+  sanitizeEmail,
   sanitizeScore,
   sanitizeDuration,
   sanitizeLevel,
