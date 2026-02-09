@@ -86,19 +86,27 @@ const allowedOrigins = [
   'https://www.bitbreaker.optaimum.com'
 ].filter(Boolean)
 
+// Normalize origin (strip trailing slash, lowercase) so CORS matches Vercel and other hosts
+function normalizeOrigin(o) {
+  if (!o || typeof o !== 'string') return o
+  return (o.replace(/\/+$/, '') || o).toLowerCase()
+}
+
+const allowedOriginsNormalized = new Set(allowedOrigins.map((x) => normalizeOrigin(x)))
+
+function isOriginAllowed(origin) {
+  if (!origin || typeof origin !== 'string') return false
+  const o = normalizeOrigin(origin)
+  if (allowedOriginsNormalized.has(o)) return true
+  if (allowedOrigins.includes(origin) || allowedOrigins.includes(o)) return true
+  if (o.endsWith('.vercel.app') || origin.endsWith('.vercel.app')) return true
+  return false
+}
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests without origin (health checks, webhooks, server-to-server)
-    if (!origin) {
-      return callback(null, true)
-    }
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true)
-    }
-    // Allow any *.vercel.app preview (Vercel deployment URLs)
-    if (origin.endsWith('.vercel.app')) {
-      return callback(null, true)
-    }
+    if (!origin) return callback(null, true)
+    if (isOriginAllowed(origin)) return callback(null, true)
     console.warn(`[CORS] Blocked request from origin: ${origin}`)
     callback(new Error('Not allowed by CORS'))
   },
@@ -109,9 +117,10 @@ app.use(cors({
 
 // Ensure CORS on every response (including 500) so browser gets headers
 app.use((req, res, next) => {
-  const o = req.get('Origin')
-  if (o && (allowedOrigins.includes(o) || o.endsWith('.vercel.app'))) {
-    res.setHeader('Access-Control-Allow-Origin', o)
+  const raw = req.get('Origin')
+  if (!raw) return next()
+  if (isOriginAllowed(raw)) {
+    res.setHeader('Access-Control-Allow-Origin', raw)
     res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-correlation-id')

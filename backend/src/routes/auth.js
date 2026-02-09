@@ -146,12 +146,18 @@ router.post('/register', async (req, res, next) => {
     }
 
     // Send verification email if email provided
+    let emailSent = false
     if (cleanEmail) {
       const verifyToken = crypto.randomBytes(32).toString('hex')
       await cacheStore.set(`${VERIFY_PREFIX}${verifyToken}`, user.id, VERIFY_TTL)
-      await emailService.sendVerificationEmail(cleanEmail, verifyToken).catch((e) =>
+      try {
+        emailSent = await emailService.sendVerificationEmail(cleanEmail, verifyToken)
+        if (!emailSent) {
+          console.warn('[AUTH] Verification email was not sent (check RESEND_API_KEY and logs)')
+        }
+      } catch (e) {
         console.warn('[AUTH] Verification email send failed:', e.message)
-      )
+      }
     }
 
     console.log(`[AUTH] User registered: ${user.id.substring(0, 8)}... (${cleanUsername})`)
@@ -161,8 +167,10 @@ router.post('/register', async (req, res, next) => {
       username: user.username,
       displayName: user.display_name,
       token,
-      emailSent: !!cleanEmail,
-      message: cleanEmail ? 'Account created. Please check your email to verify.' : undefined
+      emailSent,
+      message: cleanEmail
+        ? (emailSent ? 'Account created. Please check your email to verify.' : 'Account created. Verification email could not be sent – check your inbox or try again later.')
+        : undefined
     })
   } catch (error) {
     next(error)
