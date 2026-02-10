@@ -131,14 +131,14 @@ router.post('/start-attempt', requireAuth, async (req, res, next) => {
       })
     }
 
-    // Get cost in sats
+    // Get cost in sats (free-to-play when ATTEMPT_COST_USD <= 0)
     const { sats: costSats, usd: costUsd, rate } = await getBuyInSats()
 
-    // Check wallet balance
+    // Check wallet balance only when attempts have a non-zero cost
     const wallet = await db.wallets.getByUserId(req.userId)
     const balanceSats = wallet?.balance_sats || 0
 
-    if (balanceSats < costSats) {
+    if (costSats > 0 && balanceSats < costSats) {
       const { usd: balanceUsd } = await satsToUsd(balanceSats)
       return res.status(400).json({
         error: 'Insufficient balance',
@@ -150,20 +150,26 @@ router.post('/start-attempt', requireAuth, async (req, res, next) => {
       })
     }
 
-    // Deduct from wallet (using 'buy_in' type which is allowed by DB constraint)
-    await db.wallets.debit(req.userId, costSats, 'buy_in', `Game attempt ${attemptsUsed + 1}`)
+    // Deduct from wallet (using 'buy_in' type) only when there is a cost
+    if (costSats > 0) {
+      await db.wallets.debit(req.userId, costSats, 'buy_in', `Game attempt ${attemptsUsed + 1}`)
+    }
 
     // Increment attempt counter
     const updatedEntry = await db.entries.incrementAttempt(entry.id)
 
     if (!updatedEntry) {
       // Refund if increment failed
-      await db.wallets.credit(req.userId, costSats, 'refund', 'Attempt start refund')
+      if (costSats > 0) {
+        await db.wallets.credit(req.userId, costSats, 'refund', 'Attempt start refund')
+      }
       return res.status(500).json({ error: 'Failed to start attempt' })
     }
 
-    // Update prize pool
-    await db.tournaments.updatePrizePool(tournament.id, costSats)
+    // Update prize pool only when attempts have a cost; house fee still applied on payouts
+    if (costSats > 0) {
+      await db.tournaments.updatePrizePool(tournament.id, costSats)
+    }
 
     // Generate attempt ID
     const attemptId = crypto.randomBytes(16).toString('hex')
@@ -179,7 +185,8 @@ router.post('/start-attempt', requireAuth, async (req, res, next) => {
 
     // Get updated wallet and jackpot
     const newWallet = await db.wallets.getByUserId(req.userId)
-    const { usd: jackpotUsd } = await satsToUsd(parseInt(tournament.prize_pool_sats) + costSats)
+    const prizePoolSats = parseInt(tournament.prize_pool_sats) + (costSats > 0 ? costSats : 0)
+    const { usd: jackpotUsd } = await satsToUsd(prizePoolSats)
 
     console.log(`[GAME] Attempt ${attemptNumber} started for user ${req.userId.substring(0, 8)}... ($${costUsd})`)
 

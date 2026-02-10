@@ -25,7 +25,7 @@ function RulesModal({ onClose }) {
           textAlign: 'center'
         }}>
           <div style={{ fontSize: '1.1rem', color: '#ffd700', fontWeight: '600' }}>
-            $5 per attempt • 3 attempts daily • Top 3 win!
+            Free to play • 3 attempts daily • Top 3 win!
           </div>
         </div>
 
@@ -56,10 +56,10 @@ function RulesModal({ onClose }) {
           </ul>
         </Section>
 
-        {/* Pricing */}
-        <Section title="Attempts & Pricing">
+        {/* Attempts */}
+        <Section title="Attempts">
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-            <InfoBox label="Cost per Attempt" value="$5.00" />
+            <InfoBox label="Cost per Attempt" value="Free" />
             <InfoBox label="Max per Day" value="3 attempts" />
           </div>
           <p style={{ color: '#888', fontSize: '0.85rem', textAlign: 'center' }}>

@@ -129,12 +129,20 @@ export async function satsToUsd(sats) {
 }
 
 /**
- * Get the buy-in amount in sats
- * Uses ATTEMPT_COST_USD env var, defaults to $0.01 for testing
+ * Get the buy-in amount in sats (per attempt)
+ * Uses ATTEMPT_COST_USD from config; when 0 or less, attempts are free.
  * @returns {Promise<{sats: number, usd: number, rate: object}>}
  */
 export async function getBuyInSats() {
-  const BUY_IN_USD = parseFloat(process.env.ATTEMPT_COST_USD) || 0.01;
+  const raw = parseFloat(process.env.ATTEMPT_COST_USD);
+  const BUY_IN_USD = Number.isFinite(raw) ? raw : 0;
+
+  // Free-to-play: no cost per attempt, but still return a rate for UI if needed
+  if (BUY_IN_USD <= 0) {
+    const rate = await getBtcRate();
+    return { sats: 0, usd: 0, rate };
+  }
+
   const { sats, rate } = await usdToSats(BUY_IN_USD);
   return { sats, usd: BUY_IN_USD, rate };
 }

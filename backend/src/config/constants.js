@@ -7,7 +7,10 @@
 
 // Game configuration
 export const MAX_ATTEMPTS_PER_TOURNAMENT = 3
-export const ATTEMPT_COST_USD = parseFloat(process.env.ATTEMPT_COST_USD) || 5.00  // Default to $5.00 production price
+// Cost per attempt in USD.
+// Defaults to 0.00 so the game is free to play unless explicitly overridden.
+const rawAttemptCost = parseFloat(process.env.ATTEMPT_COST_USD)
+export const ATTEMPT_COST_USD = Number.isFinite(rawAttemptCost) ? rawAttemptCost : 0.00
 
 // Prize distribution (must sum to 1.0 or less)
 export const PRIZE_DISTRIBUTION = [

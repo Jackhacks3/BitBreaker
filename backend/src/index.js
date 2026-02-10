@@ -77,29 +77,15 @@ app.use(helmet({
   }
 }))
 
-// CORS configuration – production frontend must be allowed so error responses include CORS headers
-const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:3000',
-  'http://localhost:5173', // Vite dev server
-  'https://bit-breaker-psi.vercel.app', // Production frontend (Vercel)
-  'https://bitbreaker.optaimum.com',
-  'https://www.bitbreaker.optaimum.com'
-].filter(Boolean)
-
-// Normalize origin (strip trailing slash, lowercase) so CORS matches Vercel and other hosts
-function normalizeOrigin(o) {
-  if (!o || typeof o !== 'string') return o
-  return (o.replace(/\/+$/, '') || o).toLowerCase()
-}
-
-const allowedOriginsNormalized = new Set(allowedOrigins.map((x) => normalizeOrigin(x)))
-
+// CORS configuration – allow Vercel (*.vercel.app), optaimum.com, localhost
 function isOriginAllowed(origin) {
   if (!origin || typeof origin !== 'string') return false
-  const o = normalizeOrigin(origin)
-  if (allowedOriginsNormalized.has(o)) return true
-  if (allowedOrigins.includes(origin) || allowedOrigins.includes(o)) return true
-  if (o.endsWith('.vercel.app') || origin.endsWith('.vercel.app')) return true
+  const s = origin.trim().toLowerCase().replace(/\/+$/, '')
+  // Explicit production origins (in case of proxy/encoding quirks)
+  if (s === 'https://bitbreaker.optaimum.com' || s === 'https://www.bitbreaker.optaimum.com') return true
+  if (s.startsWith('http://localhost') || s.startsWith('http://127.0.0.1')) return true
+  if (s.includes('.vercel.app')) return true
+  if (s.includes('optaimum.com')) return true
   return false
 }
 
@@ -118,8 +104,7 @@ app.use(cors({
 // Ensure CORS on every response (including 500) so browser gets headers
 app.use((req, res, next) => {
   const raw = req.get('Origin')
-  if (!raw) return next()
-  if (isOriginAllowed(raw)) {
+  if (raw && isOriginAllowed(raw)) {
     res.setHeader('Access-Control-Allow-Origin', raw)
     res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -258,6 +243,7 @@ async function start() {
     // Create today's tournament if doesn't exist
     await tournamentEngine.ensureTodaysTournament()
     console.log('Tournament engine: ready')
+    console.log('CORS: allowing *.vercel.app, optaimum.com, localhost')
 
     // Schedule daily tournament creation (midnight UTC)
     cron.schedule('0 0 * * *', async () => {
@@ -347,7 +333,7 @@ async function start() {
 
     console.log(`  [OK] Rate limiting enabled`)
     console.log(`  [OK] Security headers enabled`)
-    console.log(`  [OK] CORS configured for: ${allowedOrigins.join(', ')}`)
+    console.log(`  [OK] CORS configured for: *.vercel.app, optaimum.com, localhost`)
     console.log('------------------------------------------')
 
     // Start server

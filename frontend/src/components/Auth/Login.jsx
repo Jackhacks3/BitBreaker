@@ -155,7 +155,7 @@ function Login({ onLogin }) {
             ? 'Login to play and compete for the jackpot'
             : mode === 'forgot'
               ? 'Enter your email to receive a password reset link'
-              : 'Sign up to start playing - $5 per attempt, 3 max daily'}
+              : 'Sign up to start playing – free to play, 3 attempts daily'}
         </p>
 
         {/* Forgot password success */}
@@ -406,7 +406,7 @@ function Login({ onLogin }) {
           color: '#888',
           fontSize: '0.75rem'
         }}>
-          💰 $5 per attempt • 🎮 3 attempts daily • 🏆 Top 3 split 98% jackpot
+          💰 Free to play • 🎮 3 attempts daily • 🏆 Top 3 split 98% jackpot • 🏦 2% house fee
         </p>
       </div>
     </div>

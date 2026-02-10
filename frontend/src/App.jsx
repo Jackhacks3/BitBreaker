@@ -48,7 +48,12 @@ function App() {
   const [showRules, setShowRules] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [verifyResult, setVerifyResult] = useState(null) // { ok, message } when ?verify-email=token
+  // Verify email: show full-page immediately when link has ?verify-email=token (so user always sees a page)
+  const [verifyResult, setVerifyResult] = useState(() => {
+    if (typeof window === 'undefined') return null
+    const token = new URLSearchParams(window.location.search).get('verify-email')
+    return token ? { pending: true } : null
+  })
   const [resetToken, setResetToken] = useState(null)   // token when ?reset-password=token
   const [resetResult, setResetResult] = useState(null)  // { ok, message } after submit
   const [currentScore, setCurrentScore] = useState(0)
@@ -71,23 +76,23 @@ function App() {
     }
   }, [])
 
-  // Handle verify-email and reset-password query params
+  // Handle verify-email: call API when we have pending (token from URL)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const verifyToken = params.get('verify-email')
     const reset = params.get('reset-password')
-    if (verifyToken && !verifyResult) {
+    if (verifyToken && verifyResult?.pending) {
+      window.history.replaceState({}, '', window.location.pathname)
       fetch(`${API_URL}/auth/verify-email?token=${encodeURIComponent(verifyToken)}`)
         .then((res) => res.json())
-        .then((data) => setVerifyResult({ ok: data.verified, message: data.message || (data.error || 'Done') }))
-        .catch(() => setVerifyResult({ ok: false, message: 'Verification failed' }))
-      window.history.replaceState({}, '', window.location.pathname)
+        .then((data) => setVerifyResult({ ok: !!data.verified, message: data.message || data.error || 'Done' }))
+        .catch(() => setVerifyResult({ ok: false, message: 'Verification failed. The link may have expired.' }))
     }
     if (reset) {
       setResetToken(reset)
       window.history.replaceState({}, '', window.location.pathname)
     }
-  }, [])
+  }, [verifyResult?.pending])
 
   // Fetch tournament data with rate limit handling
   useEffect(() => {
@@ -384,20 +389,51 @@ function App() {
     }
   }
 
+  // Full-page verify-email view when user opens the link (so they always see a page, not blank)
+  if (verifyResult) {
+    const isPending = verifyResult.pending === true
+    const isOk = verifyResult.ok === true
+    const isFail = verifyResult.ok === false
+    return (
+      <div className="app" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)' }}>
+        <div style={{
+          maxWidth: '400px',
+          width: '90%',
+          padding: '2rem',
+          textAlign: 'center',
+          background: 'rgba(255,255,255,0.05)',
+          borderRadius: '12px',
+          border: '1px solid rgba(255,215,0,0.3)',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.3)'
+        }}>
+          <h1 style={{ color: '#ffd700', marginBottom: '1.5rem', fontSize: '1.5rem' }}>Bit Breaker</h1>
+          {isPending && (
+            <>
+              <p style={{ color: '#ccc', marginBottom: '1.5rem' }}>Verifying your email...</p>
+              <div style={{ color: '#666', fontSize: '0.9rem' }}>Please wait.</div>
+            </>
+          )}
+          {isOk && (
+            <>
+              <h2 style={{ color: '#2ecc71', marginBottom: '1rem' }}>Email verified</h2>
+              <p style={{ color: '#ccc', marginBottom: '1.5rem' }}>{verifyResult.message || 'You can now use your account.'}</p>
+              <button className="btn-confirm" onClick={() => setVerifyResult(null)} style={{ padding: '0.75rem 1.5rem' }}>Continue to game</button>
+            </>
+          )}
+          {isFail && (
+            <>
+              <h2 style={{ color: '#e74c3c', marginBottom: '1rem' }}>Verification failed</h2>
+              <p style={{ color: '#ccc', marginBottom: '1.5rem' }}>{verifyResult.message || 'The link may have expired. Try signing up again or request a new verification email.'}</p>
+              <button className="btn-confirm" onClick={() => setVerifyResult(null)} style={{ padding: '0.75rem 1.5rem' }}>Back to game</button>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="app">
-      {/* Verify email result overlay */}
-      {verifyResult && (
-        <div className="modal-overlay" style={{ alignItems: 'center', justifyContent: 'center' }}>
-          <div className="modal" style={{ maxWidth: '360px', textAlign: 'center' }}>
-            <h3 style={{ color: verifyResult.ok ? '#2ecc71' : '#e74c3c', marginBottom: '1rem' }}>
-              {verifyResult.ok ? 'Email verified' : 'Verification failed'}
-            </h3>
-            <p style={{ color: '#ccc', marginBottom: '1rem' }}>{verifyResult.message}</p>
-            <button className="btn-confirm" onClick={() => setVerifyResult(null)}>OK</button>
-          </div>
-        </div>
-      )}
 
       {/* Reset password overlay (from email link ?reset-password=token) */}
       {resetToken && !resetResult?.ok && (
@@ -446,7 +482,7 @@ function App() {
           ) : (
             <div className="game-placeholder">
               <h2>ENDLESS BIT BREAKER</h2>
-              <p className="game-tagline">$5 per attempt • 3 max daily • Top 3 win the jackpot!</p>
+              <p className="game-tagline">Free to play • 3 attempts daily • Top 3 win the jackpot!</p>
 
               {/* Attempt Indicators */}
               {isLoggedIn && (
@@ -472,7 +508,7 @@ function App() {
                 >
                   {startingAttempt ? 'STARTING...' :
                     attempts.remaining <= 0 ? 'NO ATTEMPTS LEFT' :
-                      `PLAY ($${(costUsd || 5).toFixed(2)})`}
+                      'PLAY (Free)'}
                 </button>
               )}
 

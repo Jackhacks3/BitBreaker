@@ -89,7 +89,7 @@ function PlayerGuideModal({ onClose }) {
             <li><strong style={{ color: '#ffd700' }}>Objective:</strong> Break all the bricks with the ball</li>
             <li><strong style={{ color: '#ffd700' }}>Endless Mode:</strong> Bricks regenerate - play until you miss!</li>
             <li><strong style={{ color: '#ffd700' }}>Scoring:</strong> Each brick gives points, difficulty increases over time</li>
-            <li><strong style={{ color: '#ffd700' }}>Cost:</strong> $5 per attempt, maximum 3 attempts per day</li>
+            <li><strong style={{ color: '#ffd700' }}>Cost:</strong> Free to play, maximum 3 attempts per day</li>
           </ul>
         </Section>
 

@@ -52,7 +52,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=4000
-      - FRONTEND_URL=http://localhost:3000
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - BUY_IN_SATS=${BUY_IN_SATS:-100}
       # Database - use env var or local postgres
       - DATABASE_URL=${DATABASE_URL:-postgresql://brickbreaker:brickbreaker@postgres:5432/brickbreaker}
