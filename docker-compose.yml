@@ -17,7 +17,7 @@ services:
       POSTGRES_PASSWORD: brickbreaker
       POSTGRES_DB: brickbreaker
     ports:
-      - "5434:5432"
+      - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,6 +25,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   # Redis (sessions + cache) - host 6380 to avoid conflict with other Redis on 6379
   redis:
@@ -36,6 +40,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   # Backend API
   api:
@@ -69,6 +77,10 @@ services:
     volumes:
       - ./backend:/app
       - /app/node_modules
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   # Frontend (development)
   frontend:
@@ -76,7 +88,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       - VITE_API_URL=http://api:4000
     depends_on:
@@ -86,6 +98,10 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
 volumes:
   postgres_data:
